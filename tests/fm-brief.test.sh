@@ -708,6 +708,107 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# Regression for the keyed-decision form defect: every generated brief variant
+# that teaches a literal needs-decision or resolved line shows the `[key=<slug>]`
+# token between the verb and the colon, and the literal opener/closer pair the
+# brief teaches round-trips through bin/fm-classify-lib.sh under the same key.
+# The strongest assertion is behavioral, not textual: it drives
+# status_open_decisions on opener+closer in the exact form the brief teaches, so
+# a future reword of the literal text that still parses the same key still
+# passes, while a reword that silently drops or moves the key fails. This guards
+# the defect observed on three tasks in one session (aura-video-plan4-remaining-
+# stages, aura-selfhost-deploy-runner, phiora-selfhost-workflow-runners), where
+# workers put the token after the colon and the decision resurfaced under key
+# 'default' in every drain.
+test_needs_decision_opener_shows_keyed_form() {
+  local home id brief slug=api-shape status_lines open
+  home="$TMP_ROOT/needs-decision-key-home"
+  mkdir -p "$home/data"
+
+  # Source the classifier into the test shell so the round-trip uses the exact
+  # same fold rules the production OPEN DECISIONS drain uses.
+  # shellcheck source=bin/fm-classify-lib.sh
+  . "$ROOT/bin/fm-classify-lib.sh"
+
+  for kind_args in "ship|firstmate --mode no-mistakes" "scout|firstmate --scout" "secondmate|--secondmate --no-projects"; do
+    kind=${kind_args%%|*}
+    args=${kind_args#*|}
+    case "$kind" in
+      ship)       id="brief-needs-key-ship" ;;
+      scout)      id="brief-needs-key-scout" ;;
+      secondmate) id="brief-needs-key-secondmate" ;;
+    esac
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    FM_HOME="$home" FM_SECONDMATE_CHARTER='Test secondmate' \
+      "$ROOT/bin/fm-brief.sh" "$id" $args >/dev/null 2>&1 \
+      || fail "$kind brief failed to scaffold"
+    brief="$home/data/$id/brief.md"
+
+    # Each variant teaches a literal keyed form the worker copies verbatim; pin
+    # the variant-specific literal(s) against the rendered brief. Ship and scout
+    # both teach the explicit needs-decision opener (the defect that prompted
+    # this fix); secondmate charter teaches keyed working and resolved forms
+    # because it routes work through status, not rule-6.
+    case "$kind" in
+      ship|scout)
+        assert_grep 'needs-decision [key=<slug>]: {summary of options}' "$brief" \
+          "$kind brief did not render the literal 'needs-decision [key=<slug>]: {summary of options}' opener"
+        assert_no_grep 'needs-decision: {summary of options}' "$brief" \
+          "$kind brief still renders the bare 'needs-decision: {summary of options}' opener"
+        assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
+          "$kind brief did not show the keyed closer pairing the opener"
+        assert_no_grep 'resolved: {how it was decided or unblocked}' "$brief" \
+          "$kind brief still renders the bare 'resolved: {how it was decided or unblocked}' closer"
+        ;;
+      secondmate)
+        assert_grep 'working [key=<work-slug>]: {material phase}' "$brief" \
+          "secondmate charter did not render the keyed working opener"
+        assert_grep 'resolved [key=<work-slug>]: {why it is no longer active}' "$brief" \
+          "secondmate charter did not render the keyed phase-end resolved form"
+        assert_grep 'resolved [key=<slug>]: {how it was decided or unblocked}' "$brief" \
+          "secondmate charter did not render the keyed escalation-resolved form"
+        assert_no_grep 'resolved: {how it was decided or unblocked}' "$brief" \
+          "secondmate charter still renders the bare 'resolved: {how it was decided or unblocked}' escalation-resolved form"
+        ;;
+    esac
+
+    # Behavioral round-trip: substitute <slug> with a real slug, feed
+    # opener + closer to status_open_decisions, and assert the open set is
+    # empty (the resolved actually closed the needs-decision under the same key).
+    # A drift that moved the key to after the colon would register the opener
+    # under 'default' and leave it open after the closer. The opener form is
+    # the one ship/scout briefs teach; the secondmate charter's literal
+    # 'working [key=<work-slug>]: ...' opener parses the same way.
+    status_lines="$TMP_ROOT/needs-decision-key-$kind.status"
+    {
+      printf 'working: started\n'
+      printf 'needs-decision [key=%s]: should we ship today?\n' "$slug"
+      printf 'resolved [key=%s]: yes, ship it\n' "$slug"
+      printf 'done: shipped\n'
+    } > "$status_lines"
+    open=$(status_open_decisions "$status_lines")
+    [ -z "$open" ] \
+      || fail "$kind brief opener/closer pair did not close: open set still contains the keyed decision (open=$(printf %q "$open"))"
+
+    # Negative control: the same opener with a mismatched closer key must leave
+    # the decision open. This pins the parser's expectation that the closer
+    # key must equal the opener key, so a future reword that coincidentally
+    # still pairs but breaks the deliberate same-key contract fails here.
+    status_lines="$TMP_ROOT/needs-decision-key-$kind-mismatch.status"
+    {
+      printf 'needs-decision [key=%s]: should we ship today?\n' "$slug"
+      printf 'resolved [key=other-key]: yes, ship it\n'
+    } > "$status_lines"
+    open=$(status_open_decisions "$status_lines")
+    case "$open" in
+      *$'\t'"needs-decision"$'\t'*) : ;;
+      *) fail "$kind brief: mismatched closer unexpectedly closed the keyed needs-decision (open=$open)" ;;
+    esac
+  done
+
+  pass "fm-brief.sh: needs-decision/resolved literals are keyed, and opener+closer pair under the same key"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -728,3 +829,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_needs_decision_opener_shows_keyed_form
