@@ -142,6 +142,31 @@ quota_provider_paceless_limit() {
 JSON
 }
 
+quota_provider_tied_limits() {
+  local id=$1 remaining=$2 runway=$3 first_burn=$4 second_burn=$5
+  cat <<JSON
+    {
+      "provider": "$id",
+      "windows": [
+        { "id": "weekly", "pace": { "burnMultiple": $first_burn } },
+        { "id": "five_hour", "pace": { "burnMultiple": $second_burn } }
+      ],
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "effectivePercentRemaining": $remaining,
+            "limitingWindowIds": ["weekly", "five_hour"],
+            "runway": $runway
+          }
+        ]
+      }
+    }
+JSON
+}
+
 # A provider measured at all_models scope whose availability carries no runway
 # object at all, so the runway signal is absent rather than reported unknown.
 quota_provider_no_runway() {
@@ -792,6 +817,46 @@ assert_contains "$codex_row" "unknown" "an absent runway should read as unknown,
 assert_contains "$out" "recommended: codex, pi" \
   "an absent runway must not demote a measured engine below an unmeasured one"
 pass "an absent runway reads as unknown and leaves the measured ranking alone"
+
+# --- exhausted and tied constraints remain honest --------------------------
+
+CFG="$TMP_ROOT/exhausted-now.yaml"
+write_config "$CFG" 'agent: [codex, pi, gemini]'
+EXHAUSTED='{ "status": "exhausted_now", "usableRunwaySeconds": 0 }'
+write_quota \
+  "$(quota_provider codex 0 "$EXHAUSTED" 4.9)" \
+  "$(quota_provider gemini 40 "$SCARCE" 2.1)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "exhausted-now report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "exhausted now" "an exhausted runway must render as its own state"
+assert_contains "$out" "recommended: pi, gemini, codex" \
+  "an exhausted engine must rank below unmeasured and projected-exhaustion engines"
+pass "an exhausted runway is distinct and ranks last"
+
+CFG="$TMP_ROOT/unrecognized-runway.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+FUTURE_RUNWAY='{ "status": "future_status" }'
+write_quota "$(quota_provider codex 90 "$FUTURE_RUNWAY" 0.2)" \
+  "$(quota_provider pi 10 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "unrecognized-runway report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "unknown" "an unrecognized runway status must render neutrally"
+assert_not_contains "$codex_row" "future status" \
+  "an unrecognized status must not masquerade as a known verdict"
+assert_contains "$out" "recommended: codex, pi" \
+  "an unrecognized runway must retain the neutral unknown-runway treatment"
+pass "an unrecognized runway status cannot become a healthy verdict"
+
+CFG="$TMP_ROOT/tied-limits.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider_tied_limits codex 18 "$HEALTHY" 0.5 9.9)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "tied-limit report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "9.90x (2 tied)" \
+  "tied limiting windows must show the worst burn and disclose the tie"
+assert_not_contains "$codex_row" "0.50x" \
+  "a slower co-limiting burn must not be presented as the constraint"
+pass "tied limiting windows show their worst burn and tie count"
 
 # --- a missing headroom number neither promotes nor demotes ------------------
 #

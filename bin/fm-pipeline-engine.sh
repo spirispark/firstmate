@@ -71,6 +71,11 @@
 #   the plain, flow-style and anchor spellings all match and are read normally.
 #   This is a known gap left for follow-up work, not a decision.
 #
+#   The `agent:` line check also refuses two ordinary YAML spellings: an inline
+#   trailing comment after the list and quoted engine names. That refusal applies
+#   in report mode too, even though report mode would not write the file. This is
+#   deliberately left for follow-up work.
+#
 # Usage:
 #   fm-pipeline-engine.sh [--config <path>] [--exclude <list>] [--apply]
 #
@@ -436,21 +441,32 @@ def availability(provider):
 
 
 def burn_multiple(provider, entry):
-    """Burn multiple of the window that limits this provider, else None.
+    """Worst burn multiple across every tied limiting window, plus tie count.
 
     A burn multiple describes one specific window, so another window's figure is
     never a stand-in for it: printing one in the limiting window's column is a
     category error, a number that reads as authoritative about the constraint
-    while describing something else. When the limiting window reports no pace,
-    the column shows nothing.
+    while describing something else. Every window tied at the effective minimum
+    is limiting, so the worst reported burn is the honest aggregate and the row
+    discloses the tie count. If any limiting window reports no burn, the column
+    shows nothing rather than substituting a different window's figure.
     """
-    limiting = (as_sequence(entry.get("limitingWindowIds")) or [None])[0]
-    if limiting is None:
-        return None
-    for window in as_sequence(provider.get("windows")):
-        if isinstance(window, dict) and window.get("id") == limiting:
-            return as_mapping(window.get("pace")).get("burnMultiple")
-    return None
+    limiting = as_sequence(entry.get("limitingWindowIds"))
+    if not limiting:
+        return None, 0
+    windows = {
+        window.get("id"): window
+        for window in as_sequence(provider.get("windows"))
+        if isinstance(window, dict)
+    }
+    burns = [as_mapping(windows.get(window_id)).get("pace") for window_id in limiting]
+    burns = [as_mapping(pace).get("burnMultiple") for pace in burns]
+    if any(burn is None for burn in burns):
+        return None, len(limiting)
+    numbers = [as_number(burn) for burn in burns]
+    if any(number is None for number in numbers):
+        return next(burn for burn, number in zip(burns, numbers) if number is None), len(limiting)
+    return max(numbers), len(limiting)
 
 
 def human_duration(seconds):
@@ -485,8 +501,12 @@ def describe_runway(runway, unreadable):
                 )
             )
         return label, True
+    if status == "exhausted_now":
+        return "exhausted now", 2
+    if status == "unknown":
+        return "unknown", False
     if status:
-        return str(status).replace("_", " "), False
+        return "unknown", False
     return "unknown", False
 
 
@@ -511,7 +531,7 @@ for position, engine in enumerate(current):
     entry = availability(providers[source]) if source else None
     measured = entry is not None
     unreadable = []
-    headroom, burn = None, None
+    headroom, burn, limiting_count = None, None, 0
     runway_label, scarce = "-", False
     if measured:
         headroom = readable_number(
@@ -520,8 +540,9 @@ for position, engine in enumerate(current):
             "the headroom column is blank",
             unreadable,
         )
+        burn_value, limiting_count = burn_multiple(providers[source], entry)
         burn = readable_number(
-            burn_multiple(providers[source], entry),
+            burn_value,
             "its burn multiple",
             "the burn column is blank",
             unreadable,
@@ -538,6 +559,7 @@ for position, engine in enumerate(current):
             "runway": runway_label,
             "scarce": scarce,
             "burn": burn,
+            "limiting_count": limiting_count,
             "unreadable": unreadable,
             "excluded": engine in excluded,
         }
@@ -545,9 +567,9 @@ for position, engine in enumerate(current):
 
 # --- recommended order ------------------------------------------------------
 #
-# Tier 0 is every measured engine whose runway does NOT report a projected
-# exhaustion, tier 1 is unmeasured, tier 2 is measured with a projected
-# exhaustion. An unknown window outranks a window proven to be running out;
+# Tier 0 is every measured engine without a proven scarce runway, tier 1 is
+# unmeasured, tier 2 is measured with a projected exhaustion, and tier 3 is
+# already exhausted. An unknown window outranks a window proven to be running out;
 # within a tier, more headroom first, then the existing order so a tie
 # introduces no bias.
 #
@@ -570,7 +592,7 @@ for position, engine in enumerate(current):
 def tier_of(row):
     if not row["measured"]:
         return 1
-    return 2 if row["scarce"] else 0
+    return 1 + row["scarce"] if row["scarce"] else 0
 
 
 def rank_tier(tier_rows):
@@ -585,7 +607,7 @@ def rank_tier(tier_rows):
 pinned = {row["position"]: row for row in rows if row["excluded"]}
 candidates = [row for row in rows if not row["excluded"]]
 ranked = []
-for tier in (0, 1, 2):
+for tier in (0, 1, 2, 3):
     ranked.extend(rank_tier([row for row in candidates if tier_of(row) == tier]))
 
 recommended, feed = [], iter(ranked)
@@ -606,7 +628,11 @@ for row in rows:
             "%s (%s)" % (row["source"], row["basis"]) if row["source"] else "none",
             "%d%%" % row["headroom"] if row["headroom"] is not None else "-",
             row["runway"],
-            "%.2fx" % row["burn"] if row["burn"] is not None else "-",
+            (
+                "%.2fx (%d tied)" % (row["burn"], row["limiting_count"])
+                if row["burn"] is not None and row["limiting_count"] > 1
+                else "%.2fx" % row["burn"] if row["burn"] is not None else "-"
+            ),
         )
     )
 
