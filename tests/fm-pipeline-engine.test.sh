@@ -80,6 +80,65 @@ quota_provider() {
 JSON
 }
 
+# A provider quota-axi reports without knowing its availability: the shape real
+# quota-axi emits for a signed-in provider it has no quota data for.
+quota_provider_unknown() {
+  local id=$1
+  cat <<JSON
+    {
+      "provider": "$id",
+      "label": "$id",
+      "source": "oauth",
+      "windows": [],
+      "quotaSemantics": {
+        "status": "unknown",
+        "reason": "no_quota_data"
+      }
+    }
+JSON
+}
+
+# A provider whose LIMITING window reports no pace while a NON-limiting window
+# does. Real quota-axi emits pace-less windows carrying "status": "unknown" and
+# "reason": "missing_cycle", so this shape is reachable rather than contrived.
+quota_provider_paceless_limit() {
+  local id=$1 remaining=$2 runway=$3 other_burn=$4
+  cat <<JSON
+    {
+      "provider": "$id",
+      "label": "$id",
+      "source": "oauth",
+      "windows": [
+        {
+          "id": "weekly",
+          "kind": "weekly",
+          "percentRemaining": $remaining,
+          "status": "unknown",
+          "reason": "missing_cycle"
+        },
+        {
+          "id": "monthly",
+          "kind": "monthly",
+          "percentRemaining": 71,
+          "pace": { "burnMultiple": $other_burn }
+        }
+      ],
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "effectivePercentRemaining": $remaining,
+            "limitingWindowIds": ["weekly"],
+            "runway": $runway
+          }
+        ]
+      }
+    }
+JSON
+}
+
 HEALTHY='{ "status": "through_reset" }'
 SCARCE='{ "status": "projected_exhaustion", "usableRunwaySeconds": 22337 }'
 
@@ -113,8 +172,9 @@ write_config() {
 # captain's standing preference.
 $agent_line
 
-# Pi is the MiniMax validation path.
 agent_args_override:
+# Pi is the MiniMax validation path.
+#
   pi:
     - --provider
     - minimax
@@ -196,6 +256,49 @@ assert_contains "$out" "minimax (declared)" "a declared --provider should be the
 assert_contains "$out" "recommended: pi, codex" "the declared provider's headroom should rank the engine"
 assert_not_contains "$out" "pi: unmeasured" "a declared and reported provider is not unmeasured"
 pass "an engine is measured against the provider its own config declares"
+
+# The fixture's agent_args_override block carries a column-0 comment above the
+# engine entry, exactly as the real config does. A parser that ends the block
+# there loses pi's declared --provider and silently degrades it to unmeasured.
+assert_contains "$out" "minimax (declared)" \
+  "a column-0 comment inside agent_args_override must not hide the declared --provider"
+pass "a declared --provider survives a column-0 comment above its engine entry"
+
+# --- a reported provider with unknown availability --------------------------
+#
+# quota-axi knows the provider exists but reports no effective availability for
+# it. The engine is unmeasured, but for a different reason than an absent
+# provider, and the note must say which rather than contradicting its own row.
+
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider_unknown minimax)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "recommended: pi, codex" \
+  "an engine whose provider availability is unknown stays eligible and outranks a scarce one"
+assert_contains "$out" "minimax (declared)" "the declared link is still evidence when availability is not"
+assert_contains "$out" "pi: unmeasured - quota-axi reports provider minimax for it but not" \
+  "the note must say the provider is reported but its availability is not"
+assert_not_contains "$out" "pi: unmeasured - quota-axi reports no provider" \
+  "the note must not claim no provider is reported when the row names one"
+pass "a reported provider with unknown availability is unmeasured for the stated reason"
+
+# --- a limiting window with no pace shows no burn ---------------------------
+#
+# The burn column describes the window that limits the provider. Substituting a
+# non-limiting window's figure would read as authoritative about the constraint
+# while describing something else.
+
+CFG="$TMP_ROOT/paceless.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider_paceless_limit codex 18 "$SCARCE" 9.99)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_not_contains "$out" "9.99" "a non-limiting window's burn multiple must never be printed"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "empty in 6h12m" "the limiting window's runway should still be reported"
+case "$codex_row" in
+  *' -') : ;;
+  *) fail "a limiting window with no pace should leave burn empty, row reads: $codex_row" ;;
+esac
+pass "a limiting window with no pace reports no burn multiple at all"
 
 # --- an excluded provider stays excluded ------------------------------------
 

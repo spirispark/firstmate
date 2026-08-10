@@ -217,6 +217,11 @@ def declared_providers(all_lines):
             continue
         if not in_block:
             continue
+        # A column-0 comment is decision history inside the block, not the end of
+        # it. Ending the scan there would silently drop the declared --provider of
+        # every engine written below the comment.
+        if line.lstrip().startswith("#"):
+            continue
         if line.strip() and not line.startswith(" "):
             break
         key = re.match(r"^  ([A-Za-z0-9_.:-]+)\s*:\s*$", line)
@@ -260,17 +265,21 @@ def availability(provider):
 
 
 def burn_multiple(provider, entry):
-    """Burn multiple of the window that limits this provider, if reported."""
+    """Burn multiple of the window that limits this provider, else None.
+
+    A burn multiple describes one specific window, so another window's figure is
+    never a stand-in for it: printing one in the limiting window's column is a
+    category error, a number that reads as authoritative about the constraint
+    while describing something else. When the limiting window reports no pace,
+    the column shows nothing.
+    """
     limiting = (entry.get("limitingWindowIds") or [None])[0]
-    best = None
+    if limiting is None:
+        return None
     for window in provider.get("windows") or []:
-        value = (window.get("pace") or {}).get("burnMultiple")
-        if value is None:
-            continue
         if window.get("id") == limiting:
-            return value
-        best = value if best is None else max(best, value)
-    return best
+            return (window.get("pace") or {}).get("burnMultiple")
+    return None
 
 
 def human_duration(seconds):
@@ -309,35 +318,19 @@ for position, engine in enumerate(current):
         source, basis = engine, "name"
 
     entry = availability(providers[source]) if source else None
-    if entry is None:
-        rows.append(
-            {
-                "engine": engine,
-                "position": position,
-                "source": source,
-                "basis": basis,
-                "measured": False,
-                "headroom": None,
-                "runway": "-",
-                "scarce": False,
-                "burn": None,
-                "excluded": engine in excluded,
-            }
-        )
-        continue
-
-    runway_label, scarce = describe_runway(entry.get("runway"))
+    measured = entry is not None
+    runway_label, scarce = describe_runway(entry.get("runway")) if measured else ("-", False)
     rows.append(
         {
             "engine": engine,
             "position": position,
             "source": source,
             "basis": basis,
-            "measured": True,
-            "headroom": entry.get("effectivePercentRemaining"),
+            "measured": measured,
+            "headroom": entry.get("effectivePercentRemaining") if measured else None,
             "runway": runway_label,
             "scarce": scarce,
-            "burn": burn_multiple(providers[source], entry),
+            "burn": burn_multiple(providers[source], entry) if measured else None,
             "excluded": engine in excluded,
         }
     )
@@ -389,9 +382,16 @@ for row in rows:
 notes = []
 for row in rows:
     if not row["measured"]:
+        if row["source"] is None:
+            because = "quota-axi reports no provider for it"
+        else:
+            because = (
+                "quota-axi reports provider %s for it but not that provider's availability"
+                % row["source"]
+            )
         notes.append(
-            "%s: unmeasured - quota-axi reports no provider for it. Disclosed uncertainty, "
-            "not grounds to exclude; it keeps its place in the candidate set." % row["engine"]
+            "%s: unmeasured - %s. Disclosed uncertainty, not grounds to exclude; it keeps its "
+            "place in the candidate set." % (row["engine"], because)
         )
     if row["excluded"]:
         notes.append(
