@@ -544,9 +544,9 @@ Standing `yolo` authority is not a substitute for a current explicit captain ins
 ## graphify
 
 When graphify is installed locally, this repo keeps a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-Run `graphify query "<question>"` before raw grep once graphify-out/graph.json exists, because the query returns a scoped subgraph that is usually much smaller than GRAPH_REPORT.md or raw grep output.
+Run `graphify query "<question>"` before raw grep once graphify-out/graph.json exists, because the query returns a scoped subgraph that is usually much smaller than graphify-out/GRAPH_REPORT.md or raw grep output.
 Use `graphify path "<A>" "<B>"` for the shortest path between two nodes and `graphify explain "<concept>"` for a focused explanation of a node and its neighbors.
-Read graphify-out/wiki/index.md for broad navigation when it exists, and reserve GRAPH_REPORT.md for architecture review or when query/path/explain do not surface enough context.
+Read graphify-out/wiki/index.md for broad navigation when it exists, and reserve graphify-out/GRAPH_REPORT.md for architecture review or when query/path/explain do not surface enough context.
 Run `graphify update .` after modifying code so the graph stays current, because the update is AST-only and has no API cost.
 
 ## Maintaining this file

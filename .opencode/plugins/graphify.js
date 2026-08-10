@@ -9,6 +9,13 @@
 import { existsSync } from "fs";
 import { join } from "path";
 
+// Firstmate divergence from upstream graphify: a firstmate bin script may be
+// audited by the watcher-arm PreToolUse seatbelt (bin/fm-arm-command-policy.mjs),
+// which classifies the whole bash program, so a prepended echo would make a
+// legitimate arm call read as watcher-bundled. Leave those commands untouched
+// and let the next ordinary command carry the reminder.
+const FM_BIN_SCRIPT = /bin\/fm[a-z0-9-]*\.sh/;
+
 export const GraphifyPlugin = async ({ directory }) => {
   let reminded = false;
 
@@ -18,6 +25,7 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
+        if (FM_BIN_SCRIPT.test(output.args.command)) return;
         // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
         // separator, breaking the first bash command of the session (#1646).
         output.args.command =
