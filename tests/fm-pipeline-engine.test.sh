@@ -36,6 +36,9 @@ if [ "${1:-}" = --version ]; then
   exit 0
 fi
 if [ "${1:-}" = --json ]; then
+  if [ -n "${FM_FAKE_QUOTA_SLEEP:-}" ]; then
+    sleep "$FM_FAKE_QUOTA_SLEEP"
+  fi
   cat "$FM_FAKE_QUOTA_FILE"
   exit 0
 fi
@@ -265,6 +268,29 @@ assert_contains "$out" "already at the recommended order" "an unchanged order sh
 cmp -s "$TMP_ROOT/idempotent.before" "$CFG" || fail "an unchanged order must not touch the file"
 pass "--apply on an already-recommended order leaves the file untouched"
 
+# --- a write through a symlink edits the target, not the link ----------------
+#
+# A dotfiles checkout linked into place is a common setup, and --config makes
+# the path arbitrary. Replacing the link with a regular file would leave the
+# real config holding the stale order with nothing saying so.
+
+REAL="$TMP_ROOT/linked-target.yaml"
+write_config "$REAL" 'agent: [codex, pi]'
+cp "$REAL" "$TMP_ROOT/linked.orig"
+CFG="$TMP_ROOT/linked.yaml"
+ln -s "$REAL" "$CFG"
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)"
+
+out=$("$SCRIPT" --config "$CFG" --apply 2>&1) || fail "--apply through a symlink failed: $out"
+[ -L "$CFG" ] || fail "--apply must leave the symlink a symlink, not a regular file"
+assert_grep 'agent: [pi, codex]' "$REAL" "the link target should have received the new agent list"
+LINKED_LINE_NO=$(grep -n '^agent:' "$REAL" | cut -d: -f1)
+sed "${LINKED_LINE_NO}d" "$TMP_ROOT/linked.orig" > "$TMP_ROOT/linked.before.rest"
+sed "${LINKED_LINE_NO}d" "$REAL" > "$TMP_ROOT/linked.after.rest"
+cmp -s "$TMP_ROOT/linked.before.rest" "$TMP_ROOT/linked.after.rest" ||
+  fail "a write through a symlink changed bytes outside the agent: line"
+pass "--apply edits the link target surgically and leaves the symlink intact"
+
 # --- default is reporting, not writing --------------------------------------
 
 CFG="$TMP_ROOT/report-only.yaml"
@@ -314,6 +340,26 @@ pass "an engine is measured against the provider its own config declares"
 assert_contains "$out" "minimax (declared)" \
   "a column-0 comment inside agent_args_override must not hide the declared --provider"
 pass "a declared --provider survives a column-0 comment above its engine entry"
+
+# --- a declared provider quota-axi does not report --------------------------
+#
+# The config declares --provider minimax for pi. A provider that merely happens
+# to be named `pi` is a different account, and the config has already said which
+# one pi runs, so the name match must not stand in for the declaration.
+
+CFG="$TMP_ROOT/declared-unreported.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_contains "$pi_row" "none" "an unreported declaration should leave the row with no quota source"
+assert_not_contains "$pi_row" "96%" \
+  "a provider that only shares the engine's name must never supply that engine's headroom"
+assert_contains "$out" \
+  "pi: unmeasured - the config declares --provider minimax for it and quota-axi does not report that provider" \
+  "the note should name the declared provider quota-axi did not report"
+assert_contains "$out" "recommended: pi, codex" "an unreported declaration keeps the engine eligible"
+pass "a declared provider quota-axi does not report is a gap, never a name match"
 
 # --- a reported provider with unknown availability --------------------------
 #
@@ -389,6 +435,23 @@ out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
 assert_contains "$out" "recommended: gemini, codex, pi" \
   "an unknown runway alone must not change where the row sits"
 pass "an unknown runway neither promotes nor demotes the row it describes"
+
+# The discriminating case: each candidate policy for an unknown runway produces
+# a DIFFERENT order here, so only the decided one passes. Keeping the row in the
+# measured ranking gives `codex, gemini, pi, cursor`; filing it with the
+# unmeasured engines gives `gemini, codex, pi, cursor`; calling it scarce gives
+# `gemini, pi, cursor, codex`. codex carries the unknown runway at high headroom,
+# gemini is measured healthy at lower headroom, pi is unmeasured because its
+# declared minimax is unreported, and cursor is proven scarce at high headroom.
+CFG="$TMP_ROOT/runway-unknown-policy.yaml"
+write_config "$CFG" 'agent: [codex, pi, gemini, cursor]'
+write_quota "$(quota_provider codex 88 "$UNKNOWN_RUNWAY" 1.1)" \
+  "$(quota_provider gemini 30 "$HEALTHY" 0.3)" \
+  "$(quota_provider cursor 95 "$SCARCE" 5.0)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "recommended: codex, gemini, pi, cursor" \
+  "an unknown runway must rank by headroom among the measured engines, above a lower-headroom healthy one and above a proven-scarce one"
+pass "the unknown-runway rule is pinned against being read as unmeasured or as scarce"
 
 # An availability that carries no runway object at all is the same missing
 # signal and must read the same way rather than as an empty column.
@@ -495,6 +558,18 @@ expect_code 1 "$rc" "a quota-axi below the compatibility floor should refuse"
 assert_contains "$out" "floor" "the refusal should name the version floor"
 cmp -s "$TMP_ROOT/floor.orig" "$CFG" || fail "a refused write must leave the config untouched"
 pass "a quota-axi below the shared compatibility floor refuses and writes nothing"
+
+# quota-axi makes authenticated vendor calls, so a stall must hit this script's
+# own bound and refuse rather than blocking the validation lane that ran it.
+CFG="$TMP_ROOT/stalled.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+cp "$CFG" "$TMP_ROOT/stalled.orig"
+out=$(FM_PIPELINE_ENGINE_QUOTA_TIMEOUT=1 FM_FAKE_QUOTA_SLEEP=8 "$SCRIPT" --config "$CFG" --apply 2>&1)
+rc=$?
+expect_code 1 "$rc" "a stalled quota-axi --json should refuse rather than block"
+assert_contains "$out" "did not finish within 1s" "the refusal should name the bound that was hit"
+cmp -s "$TMP_ROOT/stalled.orig" "$CFG" || fail "a refused write must leave the config untouched"
+pass "a stalled quota-axi --json hits its bound and refuses instead of hanging"
 
 PATH="$BASE_PATH"
 out=$("$SCRIPT" --config "$CFG" 2>&1)

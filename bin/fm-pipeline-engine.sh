@@ -72,11 +72,17 @@
 #                     never written at all.
 #   -h, --help        print this usage
 #
+# Environment:
+#   FM_PIPELINE_ENGINE_QUOTA_TIMEOUT  seconds to bound the `quota-axi --json`
+#                     read. Default 30. A stalled vendor call refuses rather
+#                     than blocking the lane that invoked this.
+#
 # Exit status:
 #   0  the report printed (and with --apply, the config is at the recommended
 #      order)
 #   1  refused: config missing or unreadable, `agent:` line missing/duplicated/
-#      unexpected shape, or no usable quota evidence. Nothing is written.
+#      unexpected shape, or no usable quota evidence within the bound. Nothing
+#      is written.
 #   2  usage error
 set -u
 
@@ -140,8 +146,27 @@ command -v quota-axi >/dev/null 2>&1 ||
 fm_quota_axi_compatible 20 ||
   die "quota-axi is older than the ${FM_QUOTA_AXI_MIN} floor or did not report a version"
 
-QUOTA_JSON=$(quota-axi --json 2>/dev/null </dev/null) ||
+# A non-positive bound is not a bound: `timeout 0` and the Perl fallback's
+# `alarm 0` both disable the deadline, so a hung vendor CLI would run unbounded.
+QUOTA_TIMEOUT=${FM_PIPELINE_ENGINE_QUOTA_TIMEOUT:-30}
+case "$QUOTA_TIMEOUT" in
+  ''|*[!0-9]*|0*) QUOTA_TIMEOUT=30 ;;
+esac
+
+# Bounded execution is owned by bin/fm-timeout-lib.sh. quota-axi makes
+# authenticated vendor calls, and a stalled one must produce this script's own
+# refusal rather than an indefinite silent block in a validation lane.
+# Exit 124 means the bound was hit.
+# shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
+. "$SELF_DIR/fm-timeout-lib.sh"
+
+QUOTA_RC=0
+QUOTA_JSON=$(fm_run_timed "$QUOTA_TIMEOUT" quota-axi --json 2>/dev/null </dev/null) || QUOTA_RC=$?
+if [ "$QUOTA_RC" -eq 124 ]; then
+  die "quota-axi --json did not finish within ${QUOTA_TIMEOUT}s; refusing to recommend an order without evidence"
+elif [ "$QUOTA_RC" -ne 0 ]; then
   die "quota-axi --json failed; refusing to recommend an order without evidence"
+fi
 
 command -v python3 >/dev/null 2>&1 || die "python3 is required to read quota-axi JSON"
 
@@ -309,11 +334,19 @@ def describe_runway(runway):
     return "unknown", False
 
 
+# A declaration the config makes is evidence, and it settles the question either
+# way. When quota-axi does not report the declared provider, the name-match
+# fallback is off the table for that engine: measuring it against a provider
+# whose id merely equals the engine name is measuring the wrong account, which
+# the config itself has already contradicted. A labelled substitute would still
+# be the wrong number, so the answer is the gap. The name match stays available
+# only to an engine that declares nothing.
 rows = []
 for position, engine in enumerate(current):
     source, basis = None, "none"
-    if engine in declared and declared[engine] in providers:
-        source, basis = declared[engine], "declared"
+    if engine in declared:
+        if declared[engine] in providers:
+            source, basis = declared[engine], "declared"
     elif engine in providers:
         source, basis = engine, "name"
 
@@ -375,24 +408,36 @@ out = sys.stdout.write
 out("config:  %s\n" % config_path)
 out("current: %s\n" % ", ".join(current))
 out("\n")
-out("%-10s %-16s %-9s %-18s %s\n" % ("engine", "quota source", "headroom", "runway", "burn"))
+table = [("engine", "quota source", "headroom", "runway", "burn")]
 for row in rows:
-    source = "%s (%s)" % (row["source"], row["basis"]) if row["source"] else "none"
-    out(
-        "%-10s %-16s %-9s %-18s %s\n"
-        % (
+    table.append(
+        (
             row["engine"],
-            source,
+            "%s (%s)" % (row["source"], row["basis"]) if row["source"] else "none",
             "%d%%" % row["headroom"] if row["headroom"] is not None else "-",
             row["runway"],
             "%.2fx" % row["burn"] if row["burn"] is not None else "-",
         )
     )
 
+# Widths come from the data so no cell can overflow its column and shift the
+# rest of its row out of alignment, in a report whose whole point is that the
+# reader can disagree at a glance.
+widths = [max(len(cells[i]) for cells in table) for i in range(len(table[0]) - 1)]
+row_format = " ".join("%%-%ds" % width for width in widths) + " %s\n"
+for cells in table:
+    out(row_format % cells)
+
 notes = []
 for row in rows:
     if not row["measured"]:
-        if row["source"] is None:
+        if row["source"] is None and row["engine"] in declared:
+            because = (
+                "the config declares --provider %s for it and quota-axi does not report that "
+                "provider, so no name match is trusted in its place"
+                % declared[row["engine"]]
+            )
+        elif row["source"] is None:
             because = "quota-axi reports no provider for it"
         else:
             because = (
@@ -446,13 +491,18 @@ if recommended == current:
 lines[idx] = "agent: [%s]" % ", ".join(recommended)
 new_text = "\n".join(lines)
 
-directory = os.path.dirname(os.path.abspath(config_path)) or "."
+# The replace target is the real file, not the path the caller named. A config
+# reached through a symlink (a dotfiles checkout linked into place) would
+# otherwise have its link replaced by a regular file while the real target kept
+# the stale order.
+target_path = os.path.realpath(config_path)
+directory = os.path.dirname(target_path) or "."
 tmp_path = os.path.join(directory, ".fm-pipeline-engine.%d.tmp" % os.getpid())
 try:
     with open(tmp_path, "wb") as fh:
         fh.write(new_text.encode("utf-8"))
-    os.chmod(tmp_path, os.stat(config_path).st_mode & 0o7777)
-    os.replace(tmp_path, config_path)
+    os.chmod(tmp_path, os.stat(target_path).st_mode & 0o7777)
+    os.replace(tmp_path, target_path)
 except OSError as exc:
     if os.path.exists(tmp_path):
         os.unlink(tmp_path)
