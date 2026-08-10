@@ -858,6 +858,17 @@ assert_not_contains "$codex_row" "0.50x" \
   "a slower co-limiting burn must not be presented as the constraint"
 pass "tied limiting windows show their worst burn and tie count"
 
+CFG="$TMP_ROOT/tied-limit-missing-burn.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider_tied_limits codex 18 "$HEALTHY" null 9.9)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "missing tied-burn report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "- (2 tied)" \
+  "a missing limiting burn must show both the dash and tie count"
+assert_not_contains "$codex_row" "9.90x" \
+  "another tied window's burn must not replace the missing limiting evidence"
+pass "missing tied burn keeps both absence and tie visible"
+
 # --- a missing headroom number neither promotes nor demotes ------------------
 #
 # A measured engine whose availability reports no percentage remaining has one

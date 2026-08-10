@@ -629,8 +629,9 @@ for row in rows:
             "%d%%" % row["headroom"] if row["headroom"] is not None else "-",
             row["runway"],
             (
-                "%.2fx (%d tied)" % (row["burn"], row["limiting_count"])
-                if row["burn"] is not None and row["limiting_count"] > 1
+                "%s (%d tied)"
+                % ("%.2fx" % row["burn"] if row["burn"] is not None else "-", row["limiting_count"])
+                if row["limiting_count"] > 1
                 else "%.2fx" % row["burn"] if row["burn"] is not None else "-"
             ),
         )
