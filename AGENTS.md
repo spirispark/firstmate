@@ -54,7 +54,7 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
 Tracked files hold shared instructions and tooling; `data/` holds durable private fleet records; `state/` holds volatile runtime records and append-only status events; `config/` holds local operating choices; and `projects/` contains clones that are read-only to firstmate except under hard rule 1's concrete captain-approved project operation exception.
 
 ```
-AGENTS.md            this file (CLAUDE.md is a symlink to it)
+AGENTS.md            this file (CLAUDE.md and GEMINI.md are symlinks to it)
 CONTRIBUTING.md      contributor workflow and repo conventions
 README.md            public overview and development notes
 .github/workflows/   shared CI and PR enforcement, committed
@@ -541,6 +541,14 @@ Never infer an override, broaden its scope, apply it by analogy, carry it to ano
 Ambiguous scope or conflict still requires one concise clarification before action.
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
 Standing `yolo` authority is not a substitute for a current explicit captain instruction where an explicit action is required.
+
+## graphify
+
+When graphify is installed locally, this repo keeps a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Run `graphify query "<question>"` before raw grep once graphify-out/graph.json exists, because the query returns a scoped subgraph that is usually much smaller than graphify-out/GRAPH_REPORT.md or raw grep output.
+Use `graphify path "<A>" "<B>"` for the shortest path between two nodes and `graphify explain "<concept>"` for a focused explanation of a node and its neighbors.
+Read graphify-out/wiki/index.md for broad navigation when it exists, and reserve graphify-out/GRAPH_REPORT.md for architecture review or when query/path/explain do not surface enough context.
+Run `graphify update .` after modifying code so the graph stays current, because the update is AST-only and has no API cost.
 
 ## Maintaining this file
 
