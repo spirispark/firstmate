@@ -233,35 +233,75 @@ for engine in current:
 # Read only what the config itself declares. This is the sole non-inferred
 # engine-to-provider evidence available, and it is what makes Pi's MiniMax path
 # attributable if quota-axi ever reports that provider.
+#
+# The invariant this parser holds: once an agent_args_override block exists, a
+# name match must NEVER decide the answer for an engine whose entry could not be
+# read. So both halves apply. Every legitimate shape the declaration takes is
+# recognized - the two-token `- --provider` / `- <id>` pair and the single-token
+# `- --provider=<id>`, at any indentation depth - and anything left over is
+# refused with the line quoted rather than skipped. Recognizing more shapes
+# alone would be an endless syntax chase in which the next unrecognized form
+# silently restores the wrong-account measurement; refusing alone would reject
+# shapes that are perfectly ordinary YAML. Together they close it: either the
+# entry is understood, or the helper stops and says which line beat it.
 
 def declared_providers(all_lines):
-    out, in_block, engine = {}, False, None
-    for line in all_lines:
-        if re.match(r"^agent_args_override\s*:", line):
-            in_block, engine = True, None
-            continue
+    entries, in_block, engine, key_indent = {}, False, None, 0
+    for number, line in enumerate(all_lines, 1):
         if not in_block:
+            header = re.match(r"^agent_args_override\s*:(.*)$", line)
+            if header:
+                if header.group(1).strip():
+                    die(
+                        "cannot read the agent_args_override block at %s:%d, so an engine there "
+                        "could be measured against the wrong provider. Line reads: %s"
+                        % (config_path, number, line)
+                    )
+                in_block, engine, key_indent = True, None, 0
             continue
         # A column-0 comment is decision history inside the block, not the end of
         # it. Ending the scan there would silently drop the declared --provider of
         # every engine written below the comment.
-        if line.lstrip().startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if line.strip() and not line.startswith(" "):
+        if not line[0].isspace():
             break
-        key = re.match(r"^  ([A-Za-z0-9_.:-]+)\s*:\s*$", line)
+        key = re.match(r"^(\s+)([A-Za-z0-9_.:-]+)\s*:\s*$", line)
         if key:
-            engine = key.group(1)
+            engine, key_indent = key.group(2), len(key.group(1))
+            entries.setdefault(engine, [])
             continue
-        item = re.match(r"^\s+-\s*(.+?)\s*$", line)
-        if item and engine:
-            out.setdefault(engine, []).append(item.group(1).strip("'\""))
+        item = re.match(r"^(\s+)-\s*(.+?)\s*$", line)
+        if item and engine is not None and len(item.group(1)) >= key_indent:
+            entries[engine].append((item.group(2).strip("'\""), number))
+            continue
+        die(
+            "cannot read the agent_args_override entry at %s:%d, so the engine it configures "
+            "could be measured against the wrong provider. Line reads: %s"
+            % (config_path, number, line)
+        )
+
     declared = {}
-    for name, args in out.items():
-        for i, arg in enumerate(args[:-1]):
+    for name, args in entries.items():
+        provider, number = None, None
+        for i, (arg, arg_number) in enumerate(args):
             if arg == "--provider":
-                declared[name] = args[i + 1]
+                number = arg_number
+                if i + 1 < len(args):
+                    provider = args[i + 1][0]
                 break
+            if arg.startswith("--provider="):
+                provider, number = arg.split("=", 1)[1], arg_number
+                break
+        if number is None:
+            continue
+        if not provider or not re.match(r"^[A-Za-z0-9_.:-]+$", provider):
+            die(
+                "the agent_args_override entry for %s at %s:%d names --provider without a "
+                "readable value, so its declared provider cannot be trusted"
+                % (name, config_path, number)
+            )
+        declared[name] = provider
     return declared
 
 
@@ -384,19 +424,34 @@ for position, engine in enumerate(current):
 # would rank an engine at 95% headroom last purely because a pace field was
 # missing, which is the opposite error. Only a reported projected exhaustion is
 # the scarce verdict.
+#
+# A missing headroom NUMBER is the same rule in the other direction. Inside its
+# tier only the rows that report one are sorted against each other; a row without
+# one keeps the slot its existing position gives it, so it is neither promoted
+# over a measured peer nor filed beneath an engine proven to be at 0%. Any
+# stand-in number would decide that on no evidence.
 
 
-def rank_key(row):
+def tier_of(row):
     if not row["measured"]:
-        tier = 1
-    else:
-        tier = 2 if row["scarce"] else 0
-    headroom = row["headroom"] if row["headroom"] is not None else -1
-    return (tier, -headroom, row["position"])
+        return 1
+    return 2 if row["scarce"] else 0
+
+
+def rank_tier(tier_rows):
+    numbered = sorted(
+        (row for row in tier_rows if row["headroom"] is not None),
+        key=lambda row: (-row["headroom"], row["position"]),
+    )
+    feed = iter(numbered)
+    return [row if row["headroom"] is None else next(feed) for row in tier_rows]
 
 
 pinned = {row["position"]: row for row in rows if row["excluded"]}
-ranked = sorted((row for row in rows if not row["excluded"]), key=rank_key)
+candidates = [row for row in rows if not row["excluded"]]
+ranked = []
+for tier in (0, 1, 2):
+    ranked.extend(rank_tier([row for row in candidates if tier_of(row) == tier]))
 
 recommended, feed = [], iter(ranked)
 for position in range(len(rows)):

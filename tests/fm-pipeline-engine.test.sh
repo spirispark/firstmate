@@ -174,6 +174,37 @@ quota_provider_no_runway() {
 JSON
 }
 
+# A provider measured at all_models scope whose availability reports a runway
+# but no percentage remaining, so the headroom signal alone is missing.
+quota_provider_no_headroom() {
+  local id=$1 runway=$2 burn=$3
+  cat <<JSON
+    {
+      "provider": "$id",
+      "label": "$id",
+      "source": "oauth",
+      "windows": [
+        {
+          "id": "weekly",
+          "kind": "weekly",
+          "pace": { "burnMultiple": $burn }
+        }
+      ],
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "limitingWindowIds": ["weekly"],
+            "runway": $runway
+          }
+        ]
+      }
+    }
+JSON
+}
+
 # A provider whose quotaSemantics key is present but explicitly null. Reading it
 # as a mapping is the difference between this script's own disclosure and a
 # Python traceback from a helper whose contract is to refuse rather than guess.
@@ -212,8 +243,17 @@ write_quota() {
 # A config in the real one's shape: dated decision comments around a single
 # `agent:` list, plus a COMMENTED example list that must never be mistaken for
 # the live one.
+# The third argument replaces the agent_args_override entries, so a case can
+# drive the other declaration shapes a hand-edited config legitimately takes.
 write_config() {
-  local path=$1 agent_line=$2
+  local path=$1 agent_line=$2 override=${3:-}
+  if [ -z "$override" ]; then
+    override='  pi:
+    - --provider
+    - minimax
+    - --model
+    - MiniMax-M3'
+  fi
   cat > "$path" <<CFG
 # no-mistakes global configuration
 
@@ -229,11 +269,7 @@ $agent_line
 agent_args_override:
 # Pi is the MiniMax validation path.
 #
-  pi:
-    - --provider
-    - minimax
-    - --model
-    - MiniMax-M3
+$override
 
 ci_timeout: "168h"
 CFG
@@ -361,12 +397,90 @@ assert_contains "$out" \
 assert_contains "$out" "recommended: pi, codex" "an unreported declaration keeps the engine eligible"
 pass "a declared provider quota-axi does not report is a gap, never a name match"
 
+# --- every declaration shape is read, or the helper refuses -----------------
+#
+# The config is hand-edited and lives outside this repo, so the declaration
+# legitimately appears as `--provider=<id>` and at indentations other than two
+# spaces. Each shape the parser misses would silently hand the engine back to a
+# name match against a provider that merely shares its id, which is the
+# wrong-account measurement the declaration exists to prevent.
+
+CFG="$TMP_ROOT/declared-inline.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider=minimax
+    - --model=MiniMax-M3'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" \
+  "a single-token --provider=<id> declaration must still block the name match"
+assert_contains "$out" \
+  "pi: unmeasured - the config declares --provider minimax for it and quota-axi does not report that provider" \
+  "a single-token declaration should be read as a declaration"
+pass "the single-token --provider=<id> form is read as a declaration"
+
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider minimax 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "minimax (declared)" "a single-token declaration should name the measured provider"
+pass "a single-token declaration measures the engine against the provider it names"
+
+CFG="$TMP_ROOT/declared-deep-indent.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '    pi:
+      - --provider
+      - minimax'
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "minimax (declared)" \
+  "an indentation other than two spaces must not lose the declaration"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_contains "$pi_row" "96%" "the declared provider's headroom should measure the engine"
+pass "a declaration at another indentation depth is still read"
+
+# Anything the parser cannot read refuses rather than falling back to a name
+# match, because a shape it does not understand is exactly where the wrong
+# account would slip back in.
+CFG="$TMP_ROOT/declared-unreadable.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi: {provider: minimax}'
+cp "$CFG" "$TMP_ROOT/declared-unreadable.orig"
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" --apply 2>&1)
+rc=$?
+expect_code 1 "$rc" "an unreadable agent_args_override entry should refuse"
+assert_contains "$out" "cannot read the agent_args_override entry" "the refusal should say what it could not read"
+assert_contains "$out" "$CFG:" "the refusal should name the config and line"
+assert_contains "$out" "pi: {provider: minimax}" "the refusal should quote the offending line"
+assert_not_contains "$out" "recommended:" "a refusal must not recommend an order anyway"
+cmp -s "$TMP_ROOT/declared-unreadable.orig" "$CFG" || fail "a refused write must leave the config untouched"
+pass "an unreadable agent_args_override entry refuses instead of falling back to a name match"
+
+CFG="$TMP_ROOT/declared-valueless.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider'
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 1 "$rc" "a --provider with no value should refuse"
+assert_contains "$out" "names --provider without a readable value" "the refusal should say the value is missing"
+pass "a --provider with no value refuses rather than guessing the account"
+
+# An engine that declares nothing at all is unaffected and keeps the disclosed
+# name match.
+CFG="$TMP_ROOT/declares-nothing.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  codex:
+    - --model
+    - gpt-5'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "pi (name)" "an engine that declares no provider keeps the disclosed name match"
+assert_contains "$out" "name match against a reported provider id" "the name-match disclosure should still print"
+pass "an engine declaring no provider keeps the name-match path and its disclosure"
+
 # --- a reported provider with unknown availability --------------------------
 #
 # quota-axi knows the provider exists but reports no effective availability for
 # it. The engine is unmeasured, but for a different reason than an absent
 # provider, and the note must say which rather than contradicting its own row.
 
+CFG="$TMP_ROOT/unknown-availability.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
 write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider_unknown minimax)"
 out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
 assert_contains "$out" "recommended: pi, codex" \
@@ -464,6 +578,33 @@ assert_contains "$codex_row" "unknown" "an absent runway should read as unknown,
 assert_contains "$out" "recommended: codex, pi" \
   "an absent runway must not demote a measured engine below an unmeasured one"
 pass "an absent runway reads as unknown and leaves the measured ranking alone"
+
+# --- a missing headroom number neither promotes nor demotes ------------------
+#
+# A measured engine whose availability reports no percentage remaining has one
+# signal missing, not a bad one. Substituting any stand-in number would decide
+# its rank on no evidence, and a below-zero stand-in files it under an engine
+# proven to be empty.
+
+CFG="$TMP_ROOT/headroom-absent.yaml"
+write_config "$CFG" 'agent: [codex, gemini]'
+write_quota "$(quota_provider_no_headroom codex "$HEALTHY" 1.1)" \
+  "$(quota_provider gemini 0 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "through reset" "the signals the report does have must still be shown"
+assert_contains "$out" "recommended: codex, gemini" \
+  "a missing headroom number must not demote a row beneath an engine measured at 0%"
+pass "a missing headroom number does not demote the row that lacks it"
+
+# The same pair in the other order: the missing number must not promote it
+# either, so its existing position is what decides.
+CFG="$TMP_ROOT/headroom-absent-reversed.yaml"
+write_config "$CFG" 'agent: [gemini, codex]'
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "recommended: gemini, codex" \
+  "a missing headroom number must not promote a row above an engine that reports one"
+pass "a missing headroom number does not promote the row that lacks it"
 
 # --- an unexpected quota-axi shape discloses rather than crashing ------------
 
