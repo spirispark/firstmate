@@ -333,7 +333,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
-8. Never modify product or production code to make a check, test, lint, or pipeline step pass; when the environment a check runs in is missing something the check needs, fix that environment or escalate it as blocked or needs-decision. The product does not bend to suit the test.
+8. Never modify product or production code to make a check, test, lint, or pipeline step pass; when the environment a check runs in is missing something the check needs, fix that environment or escalate it as blocked or needs-decision.
+   The product does not bend to suit the test.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -449,7 +450,8 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
-8. Never modify product or production code to make a check, test, lint, or pipeline step pass; when the environment a check runs in is missing something the check needs, fix that environment or escalate it as blocked or needs-decision. The product does not bend to suit the test.
+8. Never modify product or production code to make a check, test, lint, or pipeline step pass; when the environment a check runs in is missing something the check needs, fix that environment or escalate it as blocked or needs-decision.
+   The product does not bend to suit the test.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

@@ -394,8 +394,8 @@ test_no_bending_product_to_satisfy_check() {
       "$mode ship brief lost the no-bending rule"
     assert_grep "fix that environment or escalate it as blocked or needs-decision" "$brief" \
       "$mode ship brief lost the fix-the-environment escalation guidance"
-    assert_grep "The product does not bend to suit the test." "$brief" \
-      "$mode ship brief lost the closing sentence"
+    grep -qx "   The product does not bend to suit the test." "$brief" \
+      || fail "$mode ship brief lost the closing sentence or joined two sentences on one Markdown line"
   done
 
   id="brief-no-bending-scout"
@@ -404,8 +404,8 @@ test_no_bending_product_to_satisfy_check() {
   brief="$home/data/$id/brief.md"
   assert_grep "8. Never modify product or production code to make a check, test, lint, or pipeline step pass" "$brief" \
     "scout brief lost the no-bending rule"
-  assert_grep "The product does not bend to suit the test." "$brief" \
-    "scout brief lost the closing sentence"
+  grep -qx "   The product does not bend to suit the test." "$brief" \
+    || fail "scout brief lost the closing sentence or joined two sentences on one Markdown line"
 
   # Charter deliberately does not carry the rule. It is a persistent
   # delegation contract for a domain, not a single task brief; crewmate briefs
