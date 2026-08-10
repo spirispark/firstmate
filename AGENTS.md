@@ -541,6 +541,14 @@ Ambiguous scope or conflict still requires one concise clarification before acti
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
 Standing `yolo` authority is not a substitute for a current explicit captain instruction where an explicit action is required.
 
+## graphify
+
+When graphify is installed locally, this repo keeps a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Run `graphify query "<question>"` before raw grep once graphify-out/graph.json exists, because the query returns a scoped subgraph that is usually much smaller than GRAPH_REPORT.md or raw grep output.
+Use `graphify path "<A>" "<B>"` for the shortest path between two nodes and `graphify explain "<concept>"` for a focused explanation of a node and its neighbors.
+Read graphify-out/wiki/index.md for broad navigation when it exists, and reserve GRAPH_REPORT.md for architecture review or when query/path/explain do not surface enough context.
+Run `graphify update .` after modifying code so the graph stays current, because the update is AST-only and has no API cost.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
