@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Behavior tests for the tracked graphify harness config.
 #
-# Three contracts:
+# Four contracts:
 #   PLUGIN - .opencode/plugins/graphify.js shares the tool.execute.before chain
 #            with the watcher-arm seatbelt (.opencode/plugins/fm-primary-pretool-check.js,
 #            bin/fm-arm-command-policy.mjs), which classifies the WHOLE bash
@@ -14,6 +14,10 @@
 #            gemini` when PATH resolves it.
 #   ALIAS  - GEMINI.md is a symlink alias of AGENTS.md, so every harness reads one
 #            rule set instead of drifting into a second standalone file.
+#   IGNORE - graphify-out/ stays ignored, so the `graphify update .` AGENTS.md
+#            tells agents to run cannot leave an untracked entry that makes
+#            dirty_status (bin/fm-ff-lib.sh) non-empty and stops bin/fm-update.sh
+#            from fast-forwarding a home.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -64,7 +68,7 @@ const repeat = await call("ls");
 if (repeat !== "ls") throw new Error(`reminder repeated within one session: ${repeat}`);
 EOF
   ) || status=$?
-  expect_code 0 "$status" "graphify plugin bash rewrite"
+  expect_code 0 "$status" "graphify plugin bash rewrite: $out"
   [ -z "$out" ] || fail "graphify plugin test printed output: $out"
   pass "graphify plugin: a bin/fm-*.sh command passes through, an ordinary one is reminded once"
 }
@@ -125,7 +129,19 @@ test_gemini_md_is_an_agents_md_alias() {
   pass "GEMINI.md resolves to AGENTS.md, so every harness reads one rule set"
 }
 
+# --- IGNORE: graphify-out/ --------------------------------------------------
+
+test_graphify_out_stays_ignored() {
+  local sample
+  for sample in graphify-out/graph.json graphify-out/GRAPH_REPORT.md graphify-out/wiki/index.md; do
+    git -C "$ROOT" check-ignore -q "$sample" \
+      || fail "git does not ignore $sample (graphify update . would dirty the tree and block the fast-forward)"
+  done
+  pass "graphify-out/ is ignored as a directory, so a generated graph never dirties the tree"
+}
+
 test_plugin_spares_fm_bin_scripts
 test_gemini_hook_is_silent_without_graphify
 test_gemini_hook_delegates_to_graphify
 test_gemini_md_is_an_agents_md_alias
+test_graphify_out_stays_ignored
