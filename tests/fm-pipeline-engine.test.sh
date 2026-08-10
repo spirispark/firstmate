@@ -223,6 +223,9 @@ JSON
 
 HEALTHY='{ "status": "through_reset" }'
 SCARCE='{ "status": "projected_exhaustion", "usableRunwaySeconds": 22337 }'
+# The exhaustion is reported, its length is not a number. A build above the
+# compatibility floor still clears the version check and can change a type.
+SCARCE_UNREADABLE='{ "status": "projected_exhaustion", "usableRunwaySeconds": "soon" }'
 # quota-axi reports this whenever a bounding window's pace is unmeasurable: the
 # availability is known, only its runway is not.
 UNKNOWN_RUNWAY='{ "status": "unknown", "unmeasurableWindowIds": ["weekly"] }'
@@ -830,6 +833,92 @@ assert_contains "$out" "codex: unmeasured - quota-axi reports provider codex for
   "a null quotaSemantics should be disclosed as an unknown availability"
 assert_contains "$out" "recommended: codex, pi" "both engines should stay in the candidate set"
 pass "a null quotaSemantics is disclosed through the report, not a traceback"
+
+# --- a value of an unexpected type is unusable evidence, not a crash --------
+#
+# The compatibility floor is a minimum, not a maximum: a quota-axi above it
+# clears the version check and can still change a field's type. A field that
+# arrives as the wrong type must degrade the way an absent one already does,
+# with the reader told which field went unread.
+
+CFG="$TMP_ROOT/headroom-not-a-number.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex '"18"' "$HEALTHY" 4.874)"
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 0 "$rc" "a headroom that is not a number should not abort the report"
+assert_not_contains "$out" "Traceback" "an unexpected value type must not dump a Python stack trace"
+assert_contains "$out" \
+  "codex: quota-axi reported its headroom in a form this helper cannot read as a number" \
+  "the report should disclose which field it could not read"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_not_contains "$codex_row" "18" "a value that is not a number must never be printed as one"
+assert_contains "$codex_row" "through reset" "the evidence that did read must still be shown"
+assert_contains "$out" "recommended: codex, pi" "the report must still rank what it can"
+pass "a headroom of the wrong type blanks that column and says so"
+
+CFG="$TMP_ROOT/burn-not-a-number.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex 18 "$HEALTHY" '"4.87"')"
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 0 "$rc" "a burn multiple that is not a number should not abort the report"
+assert_not_contains "$out" "Traceback" "an unexpected value type must not dump a Python stack trace"
+assert_contains "$out" \
+  "codex: quota-axi reported its burn multiple in a form this helper cannot read as a number" \
+  "the report should disclose which field it could not read"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "18%" "the headroom that did read must still be shown"
+assert_not_contains "$codex_row" "4.87" "a value that is not a number must never be printed as one"
+pass "a burn multiple of the wrong type blanks that column and says so"
+
+CFG="$TMP_ROOT/runway-seconds-not-a-number.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex 18 "$SCARCE_UNREADABLE" 4.874)"
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 0 "$rc" "a runway length that is not a number should not abort the report"
+assert_not_contains "$out" "Traceback" "an unexpected value type must not dump a Python stack trace"
+assert_contains "$out" \
+  "codex: quota-axi reported its usable runway seconds in a form this helper cannot read as a number" \
+  "the report should disclose which field it could not read"
+assert_contains "$out" "projected empty" "the exhaustion that WAS reported must still be shown"
+assert_not_contains "$out" "soon" "a value that is not a number must never be printed as one"
+assert_contains "$out" "recommended: pi, codex" "a proven exhaustion still ranks the engine last"
+pass "an unreadable runway length keeps the exhaustion verdict and says what went unread"
+
+# A payload that cannot describe providers at all has nothing to report from, so
+# it refuses through the script's own message rather than a stack trace.
+
+CFG="$TMP_ROOT/provider-not-an-object.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+cp "$CFG" "$TMP_ROOT/provider-not-an-object.orig"
+printf '{ "schemaVersion": 3, "providers": ["codex"] }\n' > "$FM_FAKE_QUOTA_FILE"
+out=$("$SCRIPT" --config "$CFG" --apply 2>&1)
+rc=$?
+expect_code 1 "$rc" "a provider entry that is not an object should refuse"
+assert_not_contains "$out" "Traceback" "a structurally impossible payload must not dump a stack trace"
+assert_contains "$out" "provider entry that is not an object" "the refusal should name the shape"
+cmp -s "$TMP_ROOT/provider-not-an-object.orig" "$CFG" || fail "a refused write must leave the config untouched"
+pass "a provider entry that is not an object refuses instead of crashing"
+
+printf '[]\n' > "$FM_FAKE_QUOTA_FILE"
+out=$("$SCRIPT" --config "$CFG" --apply 2>&1)
+rc=$?
+expect_code 1 "$rc" "a top-level array should refuse"
+assert_not_contains "$out" "Traceback" "a structurally impossible payload must not dump a stack trace"
+assert_contains "$out" "did not report an object at the top level" "the refusal should name the shape"
+cmp -s "$TMP_ROOT/provider-not-an-object.orig" "$CFG" || fail "a refused write must leave the config untouched"
+pass "a top-level array refuses instead of crashing"
+
+printf '{ "schemaVersion": 3, "providers": "codex" }\n' > "$FM_FAKE_QUOTA_FILE"
+out=$("$SCRIPT" --config "$CFG" --apply 2>&1)
+rc=$?
+expect_code 1 "$rc" "a providers value that is not a list should refuse"
+assert_not_contains "$out" "Traceback" "a structurally impossible payload must not dump a stack trace"
+assert_contains "$out" "something other than a list" "the refusal should name the shape"
+cmp -s "$TMP_ROOT/provider-not-an-object.orig" "$CFG" || fail "a refused write must leave the config untouched"
+pass "a providers value that is not a list refuses instead of crashing"
 
 # --- an excluded provider stays excluded ------------------------------------
 

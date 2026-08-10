@@ -60,6 +60,17 @@
 #     the next agent invocation; the daemon is one shared instance serving every
 #     lane, so restarting it would kill other lanes' in-flight runs.
 #
+# Known limitation, recorded rather than fixed:
+#
+#   Whether the config declares an agent_args_override block at all is decided by
+#   a regex over the raw text, before the YAML parser is consulted. A top-level
+#   key that the parser resolves but that regex does not match is therefore
+#   skipped entirely, and every engine the block declares falls back to the
+#   disclosed name match instead of being measured against its declared provider.
+#   The shape that triggers it is the quoted spelling, `"agent_args_override":`;
+#   the plain, flow-style and anchor spellings all match and are read normally.
+#   This is a known gap left for follow-up work, not a decision.
+#
 # Usage:
 #   fm-pipeline-engine.sh [--config <path>] [--exclude <list>] [--apply]
 #
@@ -357,16 +368,57 @@ try:
 except ValueError as exc:
     die("quota-axi --json is not valid JSON: %s" % exc)
 
+# The version floor is a minimum, not a maximum: a build ABOVE it clears the
+# compatibility check and can still change a field's type. So the shape is read
+# defensively at two different strengths. A payload that cannot describe
+# providers at all - a top level or a provider entry that is not an object - is
+# refused, because there is nothing to report from it. A single field that
+# arrives as the wrong type is unusable evidence rather than an impossible
+# payload, so it degrades exactly the way an absent field already does, and the
+# reader is told which field went unread rather than being shown a stack trace.
+
+if not isinstance(quota, dict):
+    die("quota-axi --json did not report an object at the top level; refusing to read an unknown shape")
+
+raw_providers = quota.get("providers")
+if raw_providers is None:
+    raw_providers = []
+if not isinstance(raw_providers, list):
+    die("quota-axi --json reported `providers` as something other than a list; refusing to read an unknown shape")
+
 providers = {}
-for provider in quota.get("providers") or []:
+for provider in raw_providers:
+    if not isinstance(provider, dict):
+        die("quota-axi --json reported a provider entry that is not an object; refusing to read an unknown shape")
     pid = provider.get("provider")
-    if pid:
-        providers[pid] = provider
+    if not isinstance(pid, str) or not pid:
+        die("quota-axi --json reported a provider entry with no readable `provider` id; refusing to read an unknown shape")
+    providers[pid] = provider
+
+
+def as_mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def as_sequence(value):
+    return value if isinstance(value, list) else []
+
+
+def readable_number(value, label, unreadable):
+    """The value as a number, recording the label when it is present but not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        if value is not None:
+            unreadable.append(label)
+        return None
+    return value
 
 
 def availability(provider):
     """all_models effective availability, or None when it is not known."""
-    for entry in (provider.get("quotaSemantics") or {}).get("effectiveAvailability") or []:
+    semantics = as_mapping(provider.get("quotaSemantics"))
+    for entry in as_sequence(semantics.get("effectiveAvailability")):
+        if not isinstance(entry, dict):
+            continue
         if entry.get("scope") == "all_models" and entry.get("status") == "known":
             return entry
     return None
@@ -381,12 +433,12 @@ def burn_multiple(provider, entry):
     while describing something else. When the limiting window reports no pace,
     the column shows nothing.
     """
-    limiting = (entry.get("limitingWindowIds") or [None])[0]
+    limiting = (as_sequence(entry.get("limitingWindowIds")) or [None])[0]
     if limiting is None:
         return None
-    for window in provider.get("windows") or []:
-        if window.get("id") == limiting:
-            return (window.get("pace") or {}).get("burnMultiple")
+    for window in as_sequence(provider.get("windows")):
+        if isinstance(window, dict) and window.get("id") == limiting:
+            return as_mapping(window.get("pace")).get("burnMultiple")
     return None
 
 
@@ -404,16 +456,18 @@ def human_duration(seconds):
     return "%dm" % minutes
 
 
-def describe_runway(runway):
-    status = (runway or {}).get("status")
+def describe_runway(runway, unreadable):
+    status = as_mapping(runway).get("status")
     if status == "through_reset":
         return "through reset", False
     if status == "projected_exhaustion":
-        secs = runway.get("usableRunwaySeconds")
+        secs = readable_number(
+            as_mapping(runway).get("usableRunwaySeconds"), "its usable runway seconds", unreadable
+        )
         label = "empty in %s" % human_duration(secs) if secs is not None else "projected empty"
         return label, True
     if status:
-        return status.replace("_", " "), False
+        return str(status).replace("_", " "), False
     return "unknown", False
 
 
@@ -437,7 +491,17 @@ for position, engine in enumerate(current):
 
     entry = availability(providers[source]) if source else None
     measured = entry is not None
-    runway_label, scarce = describe_runway(entry.get("runway")) if measured else ("-", False)
+    unreadable = []
+    headroom, burn = None, None
+    runway_label, scarce = "-", False
+    if measured:
+        headroom = readable_number(
+            entry.get("effectivePercentRemaining"), "its headroom", unreadable
+        )
+        burn = readable_number(
+            burn_multiple(providers[source], entry), "its burn multiple", unreadable
+        )
+        runway_label, scarce = describe_runway(entry.get("runway"), unreadable)
     rows.append(
         {
             "engine": engine,
@@ -445,10 +509,11 @@ for position, engine in enumerate(current):
             "source": source,
             "basis": basis,
             "measured": measured,
-            "headroom": entry.get("effectivePercentRemaining") if measured else None,
+            "headroom": headroom,
             "runway": runway_label,
             "scarce": scarce,
-            "burn": burn_multiple(providers[source], entry) if measured else None,
+            "burn": burn,
+            "unreadable": unreadable,
             "excluded": engine in excluded,
         }
     )
@@ -549,6 +614,12 @@ for row in rows:
         notes.append(
             "%s: unmeasured - %s. Disclosed uncertainty, not grounds to exclude; it keeps its "
             "place in the candidate set." % (row["engine"], because)
+        )
+    if row["unreadable"]:
+        notes.append(
+            "%s: quota-axi reported %s in a form this helper cannot read as a number, so that "
+            "column is blank. The rest of its evidence stands and it keeps its place in the "
+            "candidate set." % (row["engine"], " and ".join(row["unreadable"]))
         )
     if row["excluded"]:
         notes.append(
