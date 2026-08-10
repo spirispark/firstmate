@@ -258,7 +258,7 @@ for provider in quota.get("providers") or []:
 
 def availability(provider):
     """all_models effective availability, or None when it is not known."""
-    for entry in provider.get("quotaSemantics", {}).get("effectiveAvailability") or []:
+    for entry in (provider.get("quotaSemantics") or {}).get("effectiveAvailability") or []:
         if entry.get("scope") == "all_models" and entry.get("status") == "known":
             return entry
     return None
@@ -306,7 +306,7 @@ def describe_runway(runway):
         return label, True
     if status:
         return status.replace("_", " "), False
-    return "-", False
+    return "unknown", False
 
 
 rows = []
@@ -337,10 +337,20 @@ for position, engine in enumerate(current):
 
 # --- recommended order ------------------------------------------------------
 #
-# Tier 0 measured with runway through its reset, tier 1 unmeasured, tier 2
-# measured with a projected exhaustion. An unknown window outranks a window
-# proven to be running out; within a tier, more headroom first, then the
-# existing order so a tie introduces no bias.
+# Tier 0 is every measured engine whose runway does NOT report a projected
+# exhaustion, tier 1 is unmeasured, tier 2 is measured with a projected
+# exhaustion. An unknown window outranks a window proven to be running out;
+# within a tier, more headroom first, then the existing order so a tie
+# introduces no bias.
+#
+# A runway that is unknown or absent therefore neither promotes nor demotes its
+# row: it removes only the runway signal, and a measured engine's known headroom
+# carries the verdict alone. Filing it with the unmeasured engines would discard
+# a number this report has, because an engine reporting 6% remaining is not in
+# the same epistemic state as one reporting nothing at all; calling it scarce
+# would rank an engine at 95% headroom last purely because a pace field was
+# missing, which is the opposite error. Only a reported projected exhaustion is
+# the scarce verdict.
 
 
 def rank_key(row):

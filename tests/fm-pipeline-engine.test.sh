@@ -98,9 +98,10 @@ quota_provider_unknown() {
 JSON
 }
 
-# A provider whose LIMITING window reports no pace while a NON-limiting window
-# does. Real quota-axi emits pace-less windows carrying "status": "unknown" and
-# "reason": "missing_cycle", so this shape is reachable rather than contrived.
+# A provider whose LIMITING window reports a pace with no burn multiple while a
+# NON-limiting window reports one. Real quota-axi emits the pace object carrying
+# "status": "unknown" and "reason": "missing_cycle" with no burnMultiple, so this
+# shape is reachable rather than contrived.
 quota_provider_paceless_limit() {
   local id=$1 remaining=$2 runway=$3 other_burn=$4
   cat <<JSON
@@ -113,8 +114,7 @@ quota_provider_paceless_limit() {
           "id": "weekly",
           "kind": "weekly",
           "percentRemaining": $remaining,
-          "status": "unknown",
-          "reason": "missing_cycle"
+          "pace": { "status": "unknown", "reason": "missing_cycle" }
         },
         {
           "id": "monthly",
@@ -139,8 +139,59 @@ quota_provider_paceless_limit() {
 JSON
 }
 
+# A provider measured at all_models scope whose availability carries no runway
+# object at all, so the runway signal is absent rather than reported unknown.
+quota_provider_no_runway() {
+  local id=$1 remaining=$2 burn=$3
+  cat <<JSON
+    {
+      "provider": "$id",
+      "label": "$id",
+      "source": "oauth",
+      "windows": [
+        {
+          "id": "weekly",
+          "kind": "weekly",
+          "percentRemaining": $remaining,
+          "pace": { "burnMultiple": $burn }
+        }
+      ],
+      "quotaSemantics": {
+        "status": "known",
+        "effectiveAvailability": [
+          {
+            "scope": "all_models",
+            "status": "known",
+            "effectivePercentRemaining": $remaining,
+            "limitingWindowIds": ["weekly"]
+          }
+        ]
+      }
+    }
+JSON
+}
+
+# A provider whose quotaSemantics key is present but explicitly null. Reading it
+# as a mapping is the difference between this script's own disclosure and a
+# Python traceback from a helper whose contract is to refuse rather than guess.
+quota_provider_null_semantics() {
+  local id=$1
+  cat <<JSON
+    {
+      "provider": "$id",
+      "label": "$id",
+      "source": "oauth",
+      "windows": [],
+      "quotaSemantics": null
+    }
+JSON
+}
+
 HEALTHY='{ "status": "through_reset" }'
 SCARCE='{ "status": "projected_exhaustion", "usableRunwaySeconds": 22337 }'
+# quota-axi reports this whenever a bounding window's pace is unmeasurable: the
+# availability is known, only its runway is not.
+UNKNOWN_RUNWAY='{ "status": "unknown", "unmeasurableWindowIds": ["weekly"] }'
 
 write_quota() {
   {
@@ -299,6 +350,71 @@ case "$codex_row" in
   *) fail "a limiting window with no pace should leave burn empty, row reads: $codex_row" ;;
 esac
 pass "a limiting window with no pace reports no burn multiple at all"
+
+# --- an unknown runway removes only the runway signal ------------------------
+#
+# quota-axi knows the headroom and cannot project the runway. That is one signal
+# missing, not an engine in the same epistemic state as an unmeasured one, so
+# the known headroom still carries the verdict and the column says `unknown`.
+
+CFG="$TMP_ROOT/runway-unknown.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex 40 "$UNKNOWN_RUNWAY" 1.1)" \
+  "$(quota_provider minimax 80 "$UNKNOWN_RUNWAY" 1.2)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "unknown" "an unknown runway should be labelled, not left blank"
+assert_contains "$codex_row" "40%" "the headroom the report does have must still be shown"
+assert_contains "$out" "recommended: pi, codex" \
+  "two unknown-runway engines should be ordered by the headroom quota-axi does report"
+pass "an unknown runway is disclosed and headroom alone orders the row"
+
+# The same unknown runway must not move the row past a measured-healthy engine
+# nor behind a proven-scarce one.
+CFG="$TMP_ROOT/runway-unknown-mixed.yaml"
+write_config "$CFG" 'agent: [codex, pi, gemini]'
+write_quota "$(quota_provider codex 50 "$UNKNOWN_RUNWAY" 1.1)" \
+  "$(quota_provider minimax 10 "$SCARCE" 5.0)" \
+  "$(quota_provider gemini 90 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "recommended: gemini, codex, pi" \
+  "an unknown runway should rank below a measured-healthy engine and above a proven-scarce one"
+
+# Replacing that unknown runway with a healthy one at the same headroom must
+# leave the order identical, so the unknown runway itself moved nothing.
+write_quota "$(quota_provider codex 50 "$HEALTHY" 1.1)" \
+  "$(quota_provider minimax 10 "$SCARCE" 5.0)" \
+  "$(quota_provider gemini 90 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "recommended: gemini, codex, pi" \
+  "an unknown runway alone must not change where the row sits"
+pass "an unknown runway neither promotes nor demotes the row it describes"
+
+# An availability that carries no runway object at all is the same missing
+# signal and must read the same way rather than as an empty column.
+CFG="$TMP_ROOT/runway-absent.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider_no_runway codex 50 1.1)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "unknown" "an absent runway should read as unknown, not as a blank column"
+assert_contains "$out" "recommended: codex, pi" \
+  "an absent runway must not demote a measured engine below an unmeasured one"
+pass "an absent runway reads as unknown and leaves the measured ranking alone"
+
+# --- an unexpected quota-axi shape discloses rather than crashing ------------
+
+CFG="$TMP_ROOT/null-semantics.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider_null_semantics codex)"
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 0 "$rc" "a null quotaSemantics should not abort the report"
+assert_not_contains "$out" "Traceback" "an unexpected shape must not dump a Python stack trace"
+assert_contains "$out" "codex: unmeasured - quota-axi reports provider codex for it but not" \
+  "a null quotaSemantics should be disclosed as an unknown availability"
+assert_contains "$out" "recommended: codex, pi" "both engines should stay in the candidate set"
+pass "a null quotaSemantics is disclosed through the report, not a traceback"
 
 # --- an excluded provider stays excluded ------------------------------------
 
