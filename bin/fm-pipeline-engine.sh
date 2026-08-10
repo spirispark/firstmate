@@ -404,13 +404,24 @@ def as_sequence(value):
     return value if isinstance(value, list) else []
 
 
-def readable_number(value, label, unreadable):
-    """The value as a number, recording the label when it is present but not one."""
+def as_number(value):
+    """The value when it is a number this helper can use, else None."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        if value is not None:
-            unreadable.append(label)
         return None
     return value
+
+
+def readable_number(value, label, consequence, unreadable):
+    """The value as a number, recording what the row lost when it is not one.
+
+    The consequence travels with the label because only the caller knows what
+    the row goes on to render without that value, and a note that guessed would
+    be the report contradicting its own table.
+    """
+    number = as_number(value)
+    if number is None and value is not None:
+        unreadable.append((label, consequence))
+    return number
 
 
 def availability(provider):
@@ -461,10 +472,18 @@ def describe_runway(runway, unreadable):
     if status == "through_reset":
         return "through reset", False
     if status == "projected_exhaustion":
-        secs = readable_number(
-            as_mapping(runway).get("usableRunwaySeconds"), "its usable runway seconds", unreadable
-        )
-        label = "empty in %s" % human_duration(secs) if secs is not None else "projected empty"
+        reported = as_mapping(runway).get("usableRunwaySeconds")
+        secs = as_number(reported)
+        if secs is not None:
+            return "empty in %s" % human_duration(secs), True
+        label = "projected empty"
+        if reported is not None:
+            unreadable.append(
+                (
+                    "the length of its projected exhaustion",
+                    "the runway column reports `%s` without a duration" % label,
+                )
+            )
         return label, True
     if status:
         return str(status).replace("_", " "), False
@@ -496,10 +515,16 @@ for position, engine in enumerate(current):
     runway_label, scarce = "-", False
     if measured:
         headroom = readable_number(
-            entry.get("effectivePercentRemaining"), "its headroom", unreadable
+            entry.get("effectivePercentRemaining"),
+            "its headroom",
+            "the headroom column is blank",
+            unreadable,
         )
         burn = readable_number(
-            burn_multiple(providers[source], entry), "its burn multiple", unreadable
+            burn_multiple(providers[source], entry),
+            "its burn multiple",
+            "the burn column is blank",
+            unreadable,
         )
         runway_label, scarce = describe_runway(entry.get("runway"), unreadable)
     rows.append(
@@ -615,11 +640,11 @@ for row in rows:
             "%s: unmeasured - %s. Disclosed uncertainty, not grounds to exclude; it keeps its "
             "place in the candidate set." % (row["engine"], because)
         )
-    if row["unreadable"]:
+    for label, consequence in row["unreadable"]:
         notes.append(
-            "%s: quota-axi reported %s in a form this helper cannot read as a number, so that "
-            "column is blank. The rest of its evidence stands and it keeps its place in the "
-            "candidate set." % (row["engine"], " and ".join(row["unreadable"]))
+            "%s: quota-axi reported %s in a form this helper cannot read as a number, so %s. The "
+            "rest of its evidence stands and it keeps its place in the candidate set."
+            % (row["engine"], label, consequence)
         )
     if row["excluded"]:
         notes.append(

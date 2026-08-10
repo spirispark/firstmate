@@ -880,12 +880,39 @@ rc=$?
 expect_code 0 "$rc" "a runway length that is not a number should not abort the report"
 assert_not_contains "$out" "Traceback" "an unexpected value type must not dump a Python stack trace"
 assert_contains "$out" \
-  "codex: quota-axi reported its usable runway seconds in a form this helper cannot read as a number" \
-  "the report should disclose which field it could not read"
-assert_contains "$out" "projected empty" "the exhaustion that WAS reported must still be shown"
+  "codex: quota-axi reported the length of its projected exhaustion in a form this helper cannot read as a number" \
+  "the report should disclose which value it could not read"
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_contains "$codex_row" "projected empty" "the exhaustion that WAS reported must still be shown"
+# The note must describe the cell the row actually rendered. Claiming the column
+# is blank contradicts the `projected empty` verdict printed directly above it.
+assert_not_contains "$out" "column is blank" \
+  "the note must not claim a blank column while the runway cell names the exhaustion"
+assert_contains "$out" "the runway column reports \`projected empty\` without a duration" \
+  "the note must name the cell the row rendered and say only the duration was lost"
 assert_not_contains "$out" "soon" "a value that is not a number must never be printed as one"
 assert_contains "$out" "recommended: pi, codex" "a proven exhaustion still ranks the engine last"
 pass "an unreadable runway length keeps the exhaustion verdict and says what went unread"
+
+# Two unreadable fields are two separate losses, so each is reported against the
+# column it actually emptied rather than lumped into one sentence that can only
+# name one of them.
+CFG="$TMP_ROOT/two-fields-not-numbers.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex '"18"' "$HEALTHY" '"4.87"')"
+out=$("$SCRIPT" --config "$CFG" 2>&1)
+rc=$?
+expect_code 0 "$rc" "two unreadable fields should not abort the report"
+assert_not_contains "$out" "Traceback" "an unexpected value type must not dump a Python stack trace"
+assert_contains "$out" \
+  "codex: quota-axi reported its headroom in a form this helper cannot read as a number, so the headroom column is blank" \
+  "each unreadable field should name the column it emptied"
+assert_contains "$out" \
+  "codex: quota-axi reported its burn multiple in a form this helper cannot read as a number, so the burn column is blank" \
+  "each unreadable field should name the column it emptied"
+assert_not_contains "$out" "its headroom and its burn multiple" \
+  "two losses must not be collapsed into one sentence that can only name one column"
+pass "two unreadable fields each name the column they emptied"
 
 # A payload that cannot describe providers at all has nothing to report from, so
 # it refuses through the script's own message rather than a stack trace.
