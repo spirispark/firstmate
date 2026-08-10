@@ -241,20 +241,28 @@ for engine in current:
 # NEVER decide the answer for an engine in it. Either the declaration is parsed
 # and used, or that engine is refused with the reason stated on its own row.
 #
-# A real YAML parser owns the shape. An inline comment on an item, a trailing
-# comment after the block header or an engine key, an empty block, any
-# indentation, a second block later in the file, and both the `--provider <id>`
-# and `--provider=<id>` spellings are then simply understood, rather than chased
-# one regex at a time while each unrecognized shape quietly restores the
-# wrong-account measurement. The node tree is composed rather than loaded so a
-# repeated block keeps both halves instead of one silently shadowing the other.
+# A real YAML parser owns the shape, and it resolves the config the same way the
+# config's own consumer does. An inline comment on an item, a trailing comment
+# after the block header or an engine key, an empty block, any indentation, a
+# second block later in the file, and both the `--provider <id>` and
+# `--provider=<id>` spellings are then simply understood, rather than chased one
+# regex at a time while each unrecognized shape quietly restores the
+# wrong-account measurement.
+#
+# Agreeing with that consumer is the whole point of loading rather than
+# hand-resolving: a duplicate mapping key and a repeated flag both resolve
+# last-wins, so an engine whose entry is written twice is measured against the
+# account the config actually routes it to. Resolving a repeat any other way
+# would print a healthy window for an account the pipeline never uses.
 #
 # The import is optional: PyYAML cannot be assumed present on every machine that
 # runs firstmate. Without it the helper still reports, and every engine that
 # could carry a declaration is refused by name rather than handed to a name
 # match that might measure another account. A refusal is always scoped to the
 # engine it concerns, so the rest of the table and the recommended order are
-# unaffected: a missing parser narrows the report, it never cancels it.
+# unaffected: a missing parser narrows the report, it never cancels it. A config
+# that declares no block at all has no declaration to lose, so neither a missing
+# parser nor a parse error refuses anything there.
 
 try:
     import yaml
@@ -264,96 +272,83 @@ except ImportError:
 NO_NAME_MATCH = ", so a name match is not trusted in its place"
 
 
+def declares_override(text):
+    return any(re.match(r"^agent_args_override\s*:", line) for line in text.split("\n"))
+
+
 def provider_from_args(args):
-    """(the declared provider or None, whether --provider was named at all)."""
+    """(the LAST --provider value in the list, whether the flag appears at all)."""
+    provider, named = None, False
     for i, arg in enumerate(args):
+        if not isinstance(arg, str):
+            continue
         if arg == "--provider":
-            return (args[i + 1] if i + 1 < len(args) else None), True
-        if arg.startswith("--provider="):
-            return (arg.split("=", 1)[1] or None), True
-    return None, False
-
-
-def override_blocks(root):
-    if not isinstance(root, yaml.MappingNode):
-        return []
-    return [
-        value_node
-        for key_node, value_node in root.value
-        if getattr(key_node, "value", None) == "agent_args_override"
-    ]
-
-
-def is_empty_node(node):
-    return isinstance(node, yaml.ScalarNode) and not node.value.strip()
+            value = args[i + 1] if i + 1 < len(args) else None
+            provider = value if isinstance(value, str) else None
+            named = True
+        elif arg.startswith("--provider="):
+            provider = arg.split("=", 1)[1] or None
+            named = True
+    return provider, named
 
 
 def declared_providers(text, engines):
-    declared, refused = {}, {}
-    if yaml is None:
-        if any(re.match(r"^agent_args_override\s*:", line) for line in text.split("\n")):
-            for engine in engines:
-                refused[engine] = (
-                    "the config declares agent_args_override and this python3 has no YAML "
-                    "parser to read it" + NO_NAME_MATCH
-                )
-        return declared, refused
+    declared, refused, detail = {}, {}, None
+    if not declares_override(text):
+        return declared, refused, detail
 
-    try:
-        root = yaml.compose(text, Loader=yaml.SafeLoader)
-    except yaml.YAMLError as exc:
+    if yaml is None:
         for engine in engines:
             refused[engine] = (
-                "the config is not YAML this helper can parse (%s)"
-                % " ".join(str(exc).split()) + NO_NAME_MATCH
+                "the config declares agent_args_override and this python3 has no YAML parser "
+                "to read it" + NO_NAME_MATCH
             )
-        return declared, refused
+        return declared, refused, detail
 
-    for block in override_blocks(root):
-        if is_empty_node(block):
+    try:
+        config = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        detail = "the YAML parser could not read %s: %s" % (
+            config_path,
+            " ".join(str(exc).split()),
+        )
+        for engine in engines:
+            refused[engine] = "the config is not YAML this helper can parse" + NO_NAME_MATCH
+        return declared, refused, detail
+
+    block = config.get("agent_args_override") if isinstance(config, dict) else None
+    if not block:
+        return declared, refused, detail
+    if not isinstance(block, dict):
+        for engine in engines:
+            refused[engine] = (
+                "its agent_args_override block is not a mapping of engines to arguments"
+                + NO_NAME_MATCH
+            )
+        return declared, refused, detail
+
+    for name, args in block.items():
+        if not isinstance(name, str) or args is None:
             continue
-        if not isinstance(block, yaml.MappingNode):
-            for engine in engines:
-                refused.setdefault(
-                    engine,
-                    "its agent_args_override block is not a mapping of engines to arguments"
-                    + NO_NAME_MATCH,
-                )
+        if not isinstance(args, list):
+            refused[name] = (
+                "its agent_args_override entry is not a list of arguments" + NO_NAME_MATCH
+            )
             continue
-        for key_node, args_node in block.value:
-            name = getattr(key_node, "value", None)
-            if not isinstance(name, str) or name in refused or is_empty_node(args_node):
-                continue
-            if not isinstance(args_node, yaml.SequenceNode) or not all(
-                isinstance(item, yaml.ScalarNode) for item in args_node.value
-            ):
-                refused[name] = (
-                    "its agent_args_override entry is not a list of arguments" + NO_NAME_MATCH
-                )
-                continue
-            provider, names_provider = provider_from_args([i.value for i in args_node.value])
-            if not names_provider:
-                continue
-            if not provider or not re.match(r"^[A-Za-z0-9_.:-]+$", provider):
-                refused[name] = (
-                    "its agent_args_override entry names --provider without a readable value"
-                    + NO_NAME_MATCH
-                )
-                continue
-            if name in declared and declared[name] != provider:
-                refused[name] = (
-                    "agent_args_override declares --provider for it more than once, naming both "
-                    "%s and %s" % (declared[name], provider) + NO_NAME_MATCH
-                )
-                continue
-            declared[name] = provider
-
-    for name in refused:
-        declared.pop(name, None)
-    return declared, refused
+        provider, named = provider_from_args(args)
+        if not named:
+            continue
+        if not provider or not re.match(r"^[A-Za-z0-9_.:-]+$", provider):
+            refused[name] = (
+                "its agent_args_override entry names --provider without a readable value"
+                + NO_NAME_MATCH
+            )
+            continue
+        declared[name] = provider
+    return declared, refused, detail
 
 
-declared, refused = declared_providers(text, current)
+declared, refused, declaration_detail = declared_providers(text, current)
 
 # --- quota-axi: the single data owner ---------------------------------------
 
@@ -562,6 +557,8 @@ for row in rows:
             "exception's own revert condition in the config comments."
             % (row["engine"], row["position"] + 1)
         )
+if declaration_detail:
+    notes.append(declaration_detail)
 if any(row["basis"] == "name" for row in rows):
     notes.append(
         "quota source (name) is a name match against a reported provider id, not a declared "

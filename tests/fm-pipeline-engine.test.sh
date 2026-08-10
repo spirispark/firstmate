@@ -504,7 +504,7 @@ out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
 assert_contains "$out" "minimax (declared)" "a commented declaration should measure the engine"
 pass "a commented declaration measures the engine against the provider it names"
 
-# A second block later in the file is read, and the first one is not shadowed.
+# A second block later in the file is read rather than ignored.
 CFG="$TMP_ROOT/second-block.yaml"
 write_config "$CFG" 'agent: [codex, pi]' '  codex:
     - --model
@@ -522,12 +522,17 @@ pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
 assert_not_contains "$pi_row" "96%" "a declaration in a second block must not fall through to a name match"
 assert_contains "$out" "pi: unmeasured - the config declares --provider minimax for it" \
   "a declaration in a second agent_args_override block must still be read"
-assert_contains "$out" "codex (name)" "the first block's engine must keep its own evidence"
-pass "a second agent_args_override block is read and the first one is not lost"
+assert_contains "$out" "codex (name)" "an engine declaring no provider keeps its own evidence"
+pass "a declaration in a second agent_args_override block is read"
 
-# An engine declared in both blocks with different providers is ambiguous, so it
-# is refused by name rather than resolved by picking a winner.
-CFG="$TMP_ROOT/conflicting-blocks.yaml"
+# --- a repeated declaration resolves the way the config's consumer does ------
+#
+# The config is loaded by a YAML parser, which resolves a duplicate mapping key
+# and a repeated flag last-wins. Resolving either one differently here would
+# print a healthy window for an account the pipeline never routes to.
+
+# Two blocks declaring the same engine: the later one is what the config means.
+CFG="$TMP_ROOT/repeated-block.yaml"
 write_config "$CFG" 'agent: [codex, pi]' '  pi:
     - --provider
     - minimax
@@ -538,13 +543,67 @@ agent_args_override:
   pi:
     - --provider
     - openrouter'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" \
+  "$(quota_provider minimax 95 "$HEALTHY" 0.3)" "$(quota_provider openrouter 4 "$SCARCE" 6.0)"
 out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
-assert_contains "$out" "naming both minimax and openrouter" \
-  "two conflicting declarations for one engine should be named, not silently resolved"
 pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
-assert_not_contains "$pi_row" "96%" "a conflicting declaration must not fall through to a name match"
-assert_contains "$out" "recommended: pi, codex" "the rest of the report must still stand"
-pass "conflicting declarations for one engine refuse that engine instead of picking a winner"
+assert_contains "$pi_row" "openrouter (declared)" "the later block is the declaration the config means"
+assert_contains "$pi_row" "4%" "the engine must be measured against the account it is actually routed to"
+assert_not_contains "$pi_row" "95%" "the shadowed declaration's healthy window must never be reported"
+pass "a repeated block resolves to the later declaration, as the config's own parser does"
+
+# The same engine key written twice inside ONE block: the later entry replaces
+# the earlier one wholesale, so a --provider only in the earlier one is gone.
+CFG="$TMP_ROOT/repeated-key.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider
+    - minimax
+  pi:
+    - --model
+    - MiniMax-M3'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" \
+  "$(quota_provider minimax 95 "$HEALTHY" 0.3)" "$(quota_provider pi 96 "$HEALTHY" 0.2)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "minimax (declared)" \
+  "an entry the later duplicate replaced must not still declare a provider"
+assert_not_contains "$pi_row" "95%" "the replaced declaration's window must never be reported"
+assert_contains "$pi_row" "pi (name)" "the surviving entry declares no provider, so the name match applies"
+pass "a duplicate engine key resolves to the later entry, as the config's own parser does"
+
+# A repeated flag inside one argument list resolves the same way.
+CFG="$TMP_ROOT/repeated-flag.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider
+    - minimax
+    - --provider
+    - openrouter'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" \
+  "$(quota_provider minimax 95 "$HEALTHY" 0.3)" "$(quota_provider openrouter 4 "$SCARCE" 6.0)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_contains "$pi_row" "openrouter (declared)" "the last --provider in the list is the one that routes"
+assert_contains "$pi_row" "4%" "the engine must be measured against the account it is actually routed to"
+assert_not_contains "$pi_row" "95%" "the overridden --provider's healthy window must never be reported"
+pass "a repeated --provider flag resolves to the last value, as an argument list does"
+
+# When last-wins does not settle it - the surviving --provider has no value -
+# that one engine is refused and the rest of the report stands.
+CFG="$TMP_ROOT/unsettled-flag.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider
+    - minimax
+    - --provider'
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" \
+  "pi: unmeasured - its agent_args_override entry names --provider without a readable value" \
+  "a surviving --provider with no value should refuse that engine"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "95%" "an unsettled declaration must not fall back to an earlier value"
+assert_contains "$out" "codex (name)" "the other engine keeps its evidence row"
+assert_contains "$out" "18%" "the other engine's headroom must still be reported"
+assert_contains "$out" "recommended: pi, codex" "the recommendation must still print"
+pass "a declaration last-wins cannot settle refuses that engine only"
 
 # Trailing comments after the block header and after an engine key.
 CFG="$TMP_ROOT/commented-keys.yaml"
@@ -598,6 +657,32 @@ out=$(PYTHONPATH="$NOYAML" "$SCRIPT" --config "$CFG" 2>&1) || fail "report faile
 assert_contains "$out" "codex (name)" "a config with no declaration block needs no parser"
 assert_contains "$out" "pi (name)" "a config with no declaration block needs no parser"
 pass "a config declaring nothing is unaffected by a missing YAML parser"
+
+# --- a YAML syntax error only costs what the config actually declares -------
+
+CFG="$TMP_ROOT/broken-yaml-no-block.yaml"
+printf '# only comments\nagent: [codex, pi]\nci_timeout: "168h\n' > "$CFG"
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "codex (name)" "a config with no declaration block has nothing to lose to a parse error"
+assert_contains "$out" "pi (name)" "a config with no declaration block has nothing to lose to a parse error"
+assert_contains "$out" "recommended: pi, codex" "a parse error elsewhere must not empty the table"
+pass "a YAML syntax error in a config that declares nothing refuses no engine"
+
+# With a declaration block present the parse error does cost the declarations,
+# and the parser's own message is reported once rather than per engine.
+CFG="$TMP_ROOT/broken-yaml-with-block.yaml"
+printf 'agent: [codex, pi]\nagent_args_override:\n  pi:\n    - --provider\n    - minimax\nci_timeout: "168h\n' > "$CFG"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "pi: unmeasured - the config is not YAML this helper can parse" \
+  "an unparseable config must refuse the engines whose declarations it carries"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "an unparseable config must not fall through to a name match"
+assert_contains "$out" "recommended: codex, pi" "an unparseable config must still rank what it can"
+detail_count=$(printf '%s\n' "$out" | grep -c 'YAML parser could not read')
+[ "$detail_count" = 1 ] ||
+  fail "the parser message should be reported once, not once per engine (saw $detail_count)"
+pass "an unparseable config reports the parser message once and refuses only its declarations"
 
 # --- a reported provider with unknown availability --------------------------
 #
