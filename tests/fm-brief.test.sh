@@ -371,6 +371,59 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The product does not bend to suit the test. A crewmate that can't run a
+# check because the image, toolchain, fixture, or service is missing must fix
+# that environment (or raise blocked/needs-decision) instead of patching
+# product or production code to make the check pass. This guard pins the rule
+# in every ordinary-task brief variant (no-mistakes, direct-PR, local-only,
+# scout) and excludes it from the secondmate charter, where the rule does not
+# apply (a charter is a persistent delegation contract, not a task brief; the
+# downstream crewmate briefs the secondmate spawns will carry the rule on
+# their own).
+test_no_bending_product_to_satisfy_check() {
+  local home id brief mode
+  home="$TMP_ROOT/no-bending-product-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-no-bending-ship-$mode"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode ship brief failed to scaffold"
+    brief="$home/data/$id/brief.md"
+    assert_grep "8. Never modify product or production code to make a check, test, lint, or pipeline step pass" "$brief" \
+      "$mode ship brief lost the no-bending rule"
+    assert_grep "fix that environment or escalate it as blocked or needs-decision" "$brief" \
+      "$mode ship brief lost the fix-the-environment escalation guidance"
+    grep -qx "   The product does not bend to suit the test." "$brief" \
+      || fail "$mode ship brief lost the closing sentence or joined two sentences on one Markdown line"
+  done
+
+  id="brief-no-bending-scout"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1 \
+    || fail "scout brief failed to scaffold"
+  brief="$home/data/$id/brief.md"
+  assert_grep "8. Never modify product or production code to make a check, test, lint, or pipeline step pass" "$brief" \
+    "scout brief lost the no-bending rule"
+  grep -qx "   The product does not bend to suit the test." "$brief" \
+    || fail "scout brief lost the closing sentence or joined two sentences on one Markdown line"
+
+  # Charter deliberately does not carry the rule. It is a persistent
+  # delegation contract for a domain, not a single task brief; crewmate briefs
+  # the secondmate spawns are scaffolded through the ship/scout branches and
+  # inherit the rule on their own.
+  id="brief-no-bending-secondmate"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Test secondmate' \
+    "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter failed to scaffold"
+  brief="$home/data/$id/brief.md"
+  assert_no_grep "Never modify product or production code to make a check" "$brief" \
+    "secondmate charter incorrectly inherited the no-bending rule"
+  assert_no_grep "The product does not bend to suit the test" "$brief" \
+    "secondmate charter incorrectly inherited the no-bending closer"
+
+  pass "fm-brief.sh: no-bending rule ships in every ordinary-task brief variant and stays out of the charter"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -819,6 +872,7 @@ test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_no_bending_product_to_satisfy_check
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
