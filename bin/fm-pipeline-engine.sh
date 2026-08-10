@@ -32,7 +32,10 @@
 #     the engine id itself matches a reported provider id; `none` means no
 #     evidence, so the engine is unmeasured. The basis is printed on every row
 #     because AGENTS.md forbids inferring a provider mapping from a name alone,
-#     and a disclosed name match is the reader's to reject.
+#     and a disclosed name match is the reader's to reject. A declaration this
+#     script cannot read is never downgraded to a name match: that engine alone
+#     is reported unmeasured with the reason, and every other engine still gets
+#     its full row and its place in the recommended order.
 #
 #   - Candidates come only from the list already in the config. An engine the
 #     captain excluded by standing preference is therefore never introduced by
@@ -234,78 +237,123 @@ for engine in current:
 # engine-to-provider evidence available, and it is what makes Pi's MiniMax path
 # attributable if quota-axi ever reports that provider.
 #
-# The invariant this parser holds: once an agent_args_override block exists, a
-# name match must NEVER decide the answer for an engine whose entry could not be
-# read. So both halves apply. Every legitimate shape the declaration takes is
-# recognized - the two-token `- --provider` / `- <id>` pair and the single-token
-# `- --provider=<id>`, at any indentation depth - and anything left over is
-# refused with the line quoted rather than skipped. Recognizing more shapes
-# alone would be an endless syntax chase in which the next unrecognized form
-# silently restores the wrong-account measurement; refusing alone would reject
-# shapes that are perfectly ordinary YAML. Together they close it: either the
-# entry is understood, or the helper stops and says which line beat it.
+# The invariant: once an agent_args_override block exists, a name match must
+# NEVER decide the answer for an engine in it. Either the declaration is parsed
+# and used, or that engine is refused with the reason stated on its own row.
+#
+# A real YAML parser owns the shape. An inline comment on an item, a trailing
+# comment after the block header or an engine key, an empty block, any
+# indentation, a second block later in the file, and both the `--provider <id>`
+# and `--provider=<id>` spellings are then simply understood, rather than chased
+# one regex at a time while each unrecognized shape quietly restores the
+# wrong-account measurement. The node tree is composed rather than loaded so a
+# repeated block keeps both halves instead of one silently shadowing the other.
+#
+# The import is optional: PyYAML cannot be assumed present on every machine that
+# runs firstmate. Without it the helper still reports, and every engine that
+# could carry a declaration is refused by name rather than handed to a name
+# match that might measure another account. A refusal is always scoped to the
+# engine it concerns, so the rest of the table and the recommended order are
+# unaffected: a missing parser narrows the report, it never cancels it.
 
-def declared_providers(all_lines):
-    entries, in_block, engine, key_indent = {}, False, None, 0
-    for number, line in enumerate(all_lines, 1):
-        if not in_block:
-            header = re.match(r"^agent_args_override\s*:(.*)$", line)
-            if header:
-                if header.group(1).strip():
-                    die(
-                        "cannot read the agent_args_override block at %s:%d, so an engine there "
-                        "could be measured against the wrong provider. Line reads: %s"
-                        % (config_path, number, line)
-                    )
-                in_block, engine, key_indent = True, None, 0
-            continue
-        # A column-0 comment is decision history inside the block, not the end of
-        # it. Ending the scan there would silently drop the declared --provider of
-        # every engine written below the comment.
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if not line[0].isspace():
-            break
-        key = re.match(r"^(\s+)([A-Za-z0-9_.:-]+)\s*:\s*$", line)
-        if key:
-            engine, key_indent = key.group(2), len(key.group(1))
-            entries.setdefault(engine, [])
-            continue
-        item = re.match(r"^(\s+)-\s*(.+?)\s*$", line)
-        if item and engine is not None and len(item.group(1)) >= key_indent:
-            entries[engine].append((item.group(2).strip("'\""), number))
-            continue
-        die(
-            "cannot read the agent_args_override entry at %s:%d, so the engine it configures "
-            "could be measured against the wrong provider. Line reads: %s"
-            % (config_path, number, line)
-        )
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
-    declared = {}
-    for name, args in entries.items():
-        provider, number = None, None
-        for i, (arg, arg_number) in enumerate(args):
-            if arg == "--provider":
-                number = arg_number
-                if i + 1 < len(args):
-                    provider = args[i + 1][0]
-                break
-            if arg.startswith("--provider="):
-                provider, number = arg.split("=", 1)[1], arg_number
-                break
-        if number is None:
-            continue
-        if not provider or not re.match(r"^[A-Za-z0-9_.:-]+$", provider):
-            die(
-                "the agent_args_override entry for %s at %s:%d names --provider without a "
-                "readable value, so its declared provider cannot be trusted"
-                % (name, config_path, number)
+NO_NAME_MATCH = ", so a name match is not trusted in its place"
+
+
+def provider_from_args(args):
+    """(the declared provider or None, whether --provider was named at all)."""
+    for i, arg in enumerate(args):
+        if arg == "--provider":
+            return (args[i + 1] if i + 1 < len(args) else None), True
+        if arg.startswith("--provider="):
+            return (arg.split("=", 1)[1] or None), True
+    return None, False
+
+
+def override_blocks(root):
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    return [
+        value_node
+        for key_node, value_node in root.value
+        if getattr(key_node, "value", None) == "agent_args_override"
+    ]
+
+
+def is_empty_node(node):
+    return isinstance(node, yaml.ScalarNode) and not node.value.strip()
+
+
+def declared_providers(text, engines):
+    declared, refused = {}, {}
+    if yaml is None:
+        if any(re.match(r"^agent_args_override\s*:", line) for line in text.split("\n")):
+            for engine in engines:
+                refused[engine] = (
+                    "the config declares agent_args_override and this python3 has no YAML "
+                    "parser to read it" + NO_NAME_MATCH
+                )
+        return declared, refused
+
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as exc:
+        for engine in engines:
+            refused[engine] = (
+                "the config is not YAML this helper can parse (%s)"
+                % " ".join(str(exc).split()) + NO_NAME_MATCH
             )
-        declared[name] = provider
-    return declared
+        return declared, refused
+
+    for block in override_blocks(root):
+        if is_empty_node(block):
+            continue
+        if not isinstance(block, yaml.MappingNode):
+            for engine in engines:
+                refused.setdefault(
+                    engine,
+                    "its agent_args_override block is not a mapping of engines to arguments"
+                    + NO_NAME_MATCH,
+                )
+            continue
+        for key_node, args_node in block.value:
+            name = getattr(key_node, "value", None)
+            if not isinstance(name, str) or name in refused or is_empty_node(args_node):
+                continue
+            if not isinstance(args_node, yaml.SequenceNode) or not all(
+                isinstance(item, yaml.ScalarNode) for item in args_node.value
+            ):
+                refused[name] = (
+                    "its agent_args_override entry is not a list of arguments" + NO_NAME_MATCH
+                )
+                continue
+            provider, names_provider = provider_from_args([i.value for i in args_node.value])
+            if not names_provider:
+                continue
+            if not provider or not re.match(r"^[A-Za-z0-9_.:-]+$", provider):
+                refused[name] = (
+                    "its agent_args_override entry names --provider without a readable value"
+                    + NO_NAME_MATCH
+                )
+                continue
+            if name in declared and declared[name] != provider:
+                refused[name] = (
+                    "agent_args_override declares --provider for it more than once, naming both "
+                    "%s and %s" % (declared[name], provider) + NO_NAME_MATCH
+                )
+                continue
+            declared[name] = provider
+
+    for name in refused:
+        declared.pop(name, None)
+    return declared, refused
 
 
-declared = declared_providers(lines)
+declared, refused = declared_providers(text, current)
 
 # --- quota-axi: the single data owner ---------------------------------------
 
@@ -384,7 +432,9 @@ def describe_runway(runway):
 rows = []
 for position, engine in enumerate(current):
     source, basis = None, "none"
-    if engine in declared:
+    if engine in refused:
+        source, basis = None, "none"
+    elif engine in declared:
         if declared[engine] in providers:
             source, basis = declared[engine], "declared"
     elif engine in providers:
@@ -486,7 +536,9 @@ for cells in table:
 notes = []
 for row in rows:
     if not row["measured"]:
-        if row["source"] is None and row["engine"] in declared:
+        if row["engine"] in refused:
+            because = refused[row["engine"]]
+        elif row["source"] is None and row["engine"] in declared:
             because = (
                 "the config declares --provider %s for it and quota-axi does not report that "
                 "provider, so no name match is trusted in its place"

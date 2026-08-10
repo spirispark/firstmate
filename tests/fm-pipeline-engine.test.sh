@@ -243,11 +243,13 @@ write_quota() {
 # A config in the real one's shape: dated decision comments around a single
 # `agent:` list, plus a COMMENTED example list that must never be mistaken for
 # the live one.
-# The third argument replaces the agent_args_override entries, so a case can
-# drive the other declaration shapes a hand-edited config legitimately takes.
+# The third argument replaces the agent_args_override entries and the fourth
+# appends to the block header line, so a case can drive the other declaration
+# shapes a hand-edited config legitimately takes. An explicitly empty third
+# argument means no entries at all, which is not the same as omitting it.
 write_config() {
-  local path=$1 agent_line=$2 override=${3:-}
-  if [ -z "$override" ]; then
+  local path=$1 agent_line=$2 override=${3-FM_TEST_DEFAULT_OVERRIDE} header_suffix=${4:-}
+  if [ "$override" = FM_TEST_DEFAULT_OVERRIDE ]; then
     override='  pi:
     - --provider
     - minimax
@@ -266,7 +268,7 @@ write_config() {
 # captain's standing preference.
 $agent_line
 
-agent_args_override:
+agent_args_override:$header_suffix
 # Pi is the MiniMax validation path.
 #
 $override
@@ -435,31 +437,34 @@ pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
 assert_contains "$pi_row" "96%" "the declared provider's headroom should measure the engine"
 pass "a declaration at another indentation depth is still read"
 
-# Anything the parser cannot read refuses rather than falling back to a name
-# match, because a shape it does not understand is exactly where the wrong
-# account would slip back in.
+# A declaration the parser cannot read refuses that ENGINE, never the report.
+# Every other engine keeps its full evidence row and its place in the order,
+# because a helper the worker is told to run before each engine change must not
+# switch itself off over one malformed entry.
 CFG="$TMP_ROOT/declared-unreadable.yaml"
 write_config "$CFG" 'agent: [codex, pi]' '  pi: {provider: minimax}'
-cp "$CFG" "$TMP_ROOT/declared-unreadable.orig"
 write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
-out=$("$SCRIPT" --config "$CFG" --apply 2>&1)
-rc=$?
-expect_code 1 "$rc" "an unreadable agent_args_override entry should refuse"
-assert_contains "$out" "cannot read the agent_args_override entry" "the refusal should say what it could not read"
-assert_contains "$out" "$CFG:" "the refusal should name the config and line"
-assert_contains "$out" "pi: {provider: minimax}" "the refusal should quote the offending line"
-assert_not_contains "$out" "recommended:" "a refusal must not recommend an order anyway"
-cmp -s "$TMP_ROOT/declared-unreadable.orig" "$CFG" || fail "a refused write must leave the config untouched"
-pass "an unreadable agent_args_override entry refuses instead of falling back to a name match"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "an unreadable declaration must never fall through to a name match"
+assert_contains "$out" "pi: unmeasured - its agent_args_override entry is not a list of arguments" \
+  "the note should say why that engine could not be measured"
+assert_contains "$out" "codex (name)" "the other engine must keep its evidence row"
+assert_contains "$out" "4.87x" "the other engine's burn multiple must still be reported"
+assert_contains "$out" "recommended: pi, codex" "the recommendation must still print"
+pass "an unreadable declaration refuses one engine and leaves the rest of the report standing"
 
 CFG="$TMP_ROOT/declared-valueless.yaml"
 write_config "$CFG" 'agent: [codex, pi]' '  pi:
     - --provider'
-out=$("$SCRIPT" --config "$CFG" 2>&1)
-rc=$?
-expect_code 1 "$rc" "a --provider with no value should refuse"
-assert_contains "$out" "names --provider without a readable value" "the refusal should say the value is missing"
-pass "a --provider with no value refuses rather than guessing the account"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" \
+  "pi: unmeasured - its agent_args_override entry names --provider without a readable value" \
+  "a --provider with no value should refuse that engine by name"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "a valueless --provider must not fall through to a name match"
+assert_contains "$out" "recommended: pi, codex" "one bad entry must not cancel the recommendation"
+pass "a --provider with no value refuses that engine rather than guessing the account"
 
 # An engine that declares nothing at all is unaffected and keeps the disclosed
 # name match.
@@ -472,6 +477,127 @@ out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
 assert_contains "$out" "pi (name)" "an engine that declares no provider keeps the disclosed name match"
 assert_contains "$out" "name match against a reported provider id" "the name-match disclosure should still print"
 pass "an engine declaring no provider keeps the name-match path and its disclosure"
+
+# --- ordinary YAML the config legitimately contains -------------------------
+#
+# 107 of the real config's 146 lines are comments, so a comment beside a
+# declaration is an expected edit rather than a contrived one, and a second
+# block or a commented key is ordinary YAML too. Each shape a hand-rolled parser
+# missed used to hand the engine back to a name match against a provider that
+# merely shares its id.
+
+CFG="$TMP_ROOT/inline-comment.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider # the MiniMax account
+    - minimax'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "an inline comment must not hand the engine back to a name match"
+assert_contains "$out" \
+  "pi: unmeasured - the config declares --provider minimax for it and quota-axi does not report that provider" \
+  "an inline comment on the item must not hide the declaration"
+pass "an inline YAML comment on the --provider item leaves the declaration readable"
+
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider minimax 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "minimax (declared)" "a commented declaration should measure the engine"
+pass "a commented declaration measures the engine against the provider it names"
+
+# A second block later in the file is read, and the first one is not shadowed.
+CFG="$TMP_ROOT/second-block.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  codex:
+    - --model
+    - gpt-5
+
+model_reasoning_effort: "high"
+
+agent_args_override:
+  pi:
+    - --provider
+    - minimax'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "a declaration in a second block must not fall through to a name match"
+assert_contains "$out" "pi: unmeasured - the config declares --provider minimax for it" \
+  "a declaration in a second agent_args_override block must still be read"
+assert_contains "$out" "codex (name)" "the first block's engine must keep its own evidence"
+pass "a second agent_args_override block is read and the first one is not lost"
+
+# An engine declared in both blocks with different providers is ambiguous, so it
+# is refused by name rather than resolved by picking a winner.
+CFG="$TMP_ROOT/conflicting-blocks.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi:
+    - --provider
+    - minimax
+
+model_reasoning_effort: "high"
+
+agent_args_override:
+  pi:
+    - --provider
+    - openrouter'
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "naming both minimax and openrouter" \
+  "two conflicting declarations for one engine should be named, not silently resolved"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+assert_not_contains "$pi_row" "96%" "a conflicting declaration must not fall through to a name match"
+assert_contains "$out" "recommended: pi, codex" "the rest of the report must still stand"
+pass "conflicting declarations for one engine refuse that engine instead of picking a winner"
+
+# Trailing comments after the block header and after an engine key.
+CFG="$TMP_ROOT/commented-keys.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '  pi: # the MiniMax path
+    - --provider
+    - minimax' ' # per-engine flags'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider minimax 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "minimax (declared)" \
+  "trailing comments on the block header and the engine key must not hide the declaration"
+assert_contains "$out" "recommended: pi, codex" "a commented key must not stop the report"
+pass "trailing comments after the block header and an engine key are ordinary YAML"
+
+# An empty block declares nothing, which is not the same as being unreadable.
+CFG="$TMP_ROOT/empty-block.yaml"
+write_config "$CFG" 'agent: [codex, pi]' '' ' {}'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$("$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "pi (name)" "an empty declaration block declares nothing and leaves the name match"
+assert_contains "$out" "recommended: pi, codex" "an empty declaration block must not stop the report"
+pass "an empty agent_args_override block declares nothing and stops nothing"
+
+# --- a missing YAML parser narrows the report, it never cancels it ----------
+#
+# PyYAML cannot be assumed present on every machine that runs firstmate. Without
+# it no declaration can be read, so no engine may be handed to a name match, but
+# the table and the recommended order must still print.
+
+NOYAML="$TMP_ROOT/noyaml"
+mkdir -p "$NOYAML/yaml"
+printf 'raise ImportError("no YAML parser for this test")\n' > "$NOYAML/yaml/__init__.py"
+
+CFG="$TMP_ROOT/no-parser.yaml"
+write_config "$CFG" 'agent: [codex, pi]'
+write_quota "$(quota_provider codex 18 "$SCARCE" 4.874)" "$(quota_provider pi 96 "$HEALTHY" 0.3)"
+out=$(PYTHONPATH="$NOYAML" "$SCRIPT" --config "$CFG" 2>&1) ||
+  fail "the report must still run without a YAML parser: $out"
+assert_contains "$out" "recommended: codex, pi" "a missing parser must narrow the report, not cancel it"
+assert_contains "$out" "no YAML parser to read it" "each row should say no parser was available"
+pi_row=$(printf '%s\n' "$out" | grep '^pi ' | head -1)
+codex_row=$(printf '%s\n' "$out" | grep '^codex ' | head -1)
+assert_not_contains "$pi_row" "96%" "without a parser no engine may be handed to a name match"
+assert_not_contains "$codex_row" "18%" "without a parser no engine may be handed to a name match"
+pass "a missing YAML parser narrows the report and never restores a name match"
+
+# With no declaration block at all there is nothing to parse, so the name match
+# is unaffected by the parser being absent.
+CFG="$TMP_ROOT/no-parser-no-block.yaml"
+printf '# only comments\nagent: [codex, pi]\nci_timeout: "168h"\n' > "$CFG"
+out=$(PYTHONPATH="$NOYAML" "$SCRIPT" --config "$CFG" 2>&1) || fail "report failed: $out"
+assert_contains "$out" "codex (name)" "a config with no declaration block needs no parser"
+assert_contains "$out" "pi (name)" "a config with no declaration block needs no parser"
+pass "a config declaring nothing is unaffected by a missing YAML parser"
 
 # --- a reported provider with unknown availability --------------------------
 #
