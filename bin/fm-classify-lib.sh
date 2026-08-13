@@ -154,41 +154,98 @@ status_is_paused_or_captain_held() {  # <status-line>
 # line OPENS a keyed decision, and only an explicit resolution or a verified
 # captain-held backlog transfer referencing that key CLOSES it; a later unrelated
 # terminal line never clears an open captain decision.
+# Who WRITES the closing line is owned elsewhere: the answering firstmate closes
+# at answer time through fm-send's --resolve-key (bin/fm-send.sh header), and a
+# worker self-closes only a blocker that cleared without an answer (bin/fm-brief.sh
+# rule 6), so closure never depends on a busy worker's discipline.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
-# format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
+# format): an OPTIONAL "[key=<slug>]" token names the decision. Its documented
+# position sits between the verb and the colon, and a complete token at the
+# head of the note is accepted as an EQUIVALENT position, because that
+# misplaced-colon shape is common real worker output whose stated key must
+# never silently collapse into the shared "default" bucket (issue #2109):
 #   needs-decision [key=api-shape]: <summary>
+#   needs-decision: [key=api-shape] <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# A line with no token uses the key "default", preserving the historical
-# one-open-decision-per-task behavior (a bare "resolved:" closes "default").
-# The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.
+# Both positions state the same key and yield the same note (a consumed
+# note-head token is key metadata, stripped from the note); when both positions
+# carry a token, the documented before-colon one wins and the note-head token
+# stays note text. A token deeper inside the note is prose, never a stated key,
+# so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
+# A line with no token in either position uses the key "default", preserving
+# the historical one-open-decision-per-task behavior (a bare "resolved:" closes
+# "default"). A stated key whose slug fails the charset below is rejected (the
+# folds skip the line), never rewritten to "default".
+# The parsers are pure reads of a single line. Status metadata may contain any
+# number of "[name=value]" tags before the colon, in any order, so verb parsing
+# ends at the first tag rather than special-casing "[key=...]".
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
-  v=${v%%\[key=*}
+  v=${v%%\[*}
   v=${v#"${v%%[![:space:]]*}"}
   v=${v%"${v##*[![:space:]]}"}
   printf '%s' "$v"
 }
-status_line_note() {  # <status-line> -> text after the first colon, trimmed
-  case "$1" in
-    *:*) local n=${1#*:}; printf '%s' "${n#"${n%%[![:space:]]*}"}" ;;
-    *) printf '%s' "$1" ;;
+# 0 when a complete "[key=...]" token sits in the documented position before
+# the line's first colon (or anywhere on a line that has no colon at all).
+_fm_key_before_colon() {  # <status-line>
+  case "${1%%:*}" in
+    *\[key=*\]*) return 0 ;;
+    *) return 1 ;;
   esac
 }
-_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
-  case "$prefix" in
-    *\[key=*\]*)
-      k=${prefix#*\[key=}
-      k=${k%%\]*}
-      case "$k" in
-        ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
-      esac
-      ;;
-    *) printf 'default' ;;
+# Raw slug of a complete "[key=<slug>]" token at the head of the note (the
+# first thing after the line's first colon, ignoring whitespace). Fails when
+# the line has no colon or no complete token there; slug charset validity is
+# the caller's check via _fm_decision_slug_ok, exactly as for the before-colon
+# position.
+_fm_key_at_note_head() {  # <status-line> -> raw slug
+  local rest
+  case "$1" in
+    *:*) rest=${1#*:} ;;
+    *) return 1 ;;
   esac
+  rest=${rest#"${rest%%[![:space:]]*}"}
+  case "$rest" in
+    \[key=*\]*) rest=${rest#\[key=}; printf '%s' "${rest%%\]*}" ;;
+    *) return 1 ;;
+  esac
+}
+# 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
+_fm_decision_slug_ok() {  # <slug>
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+status_line_note() {  # <status-line> -> text after the first colon, trimmed
+  local n k
+  case "$1" in
+    *:*) n=${1#*:}; n=${n#"${n%%[![:space:]]*}"} ;;
+    *) printf '%s' "$1"; return 0 ;;
+  esac
+  # A note-head token that states this line's key (no before-colon token, valid
+  # slug) is key metadata, not note text: strip it so both stated-key positions
+  # yield the same note.
+  if ! _fm_key_before_colon "$1" && k=$(_fm_key_at_note_head "$1") \
+    && _fm_decision_slug_ok "$k"; then
+    n=${n#"[key=$k]"}
+    n=${n#"${n%%[![:space:]]*}"}
+  fi
+  printf '%s' "$n"
+}
+_fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
+  local k
+  if _fm_key_before_colon "$1"; then
+    k=${1%%:*}
+    k=${k#*\[key=}
+    k=${k%%\]*}
+  else
+    k=$(_fm_key_at_note_head "$1") || { printf 'default'; return 0; }
+  fi
+  _fm_decision_slug_ok "$k" || return 1
+  printf '%s' "$k"
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
 # Portable (no associative arrays) so the fold runs on bash 3.2 as well as 4+.
@@ -212,12 +269,50 @@ EOF
 # whole-file fold (status_open_decisions) and the incremental cursor-backed fold
 # (status_open_decisions_incremental) below call this instead of re-deriving the
 # rule, so the two consumption strategies can never drift apart on semantics.
+# Reserved decision-key namespaces, and the rule that makes them mean something.
+#
+# A key like `pending-reply-<id>` names a decision that one library raises and is
+# the only thing that ever closes it. Every writer reaches this same stream: a
+# local mate appends straight into it, and a remote mate's lines are mirrored
+# into it verbatim. So without a rule here, any writer could claim a reserved
+# key with an unrelated note, take the key over in this fold, and permanently
+# block the owner's close - leaving a decision nothing will ever resolve - or
+# clear the owner's decision with a bare resolution.
+#
+# The rule is deliberately generic, so this fold needs no knowledge of any
+# particular owner: a reserved key may only be opened or closed by a line whose
+# note speaks that namespace's own vocabulary, which its owner states by
+# beginning the note with a `<namespace>...:` token. A line failing that is not a
+# decision transition at all here and is folded as ordinary status. This is a
+# consumer-side rule on purpose - it protects local and remote writers
+# identically, and it can never fail a whole delta or wedge a stream the way a
+# writer-side rejection would.
+FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
+
+# 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
+_fm_decision_key_transition_allowed() {  # <key> <note>
+  local key=$1 note=$2 prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$key" in
+      "$prefix"*)
+        case "$note" in
+          "$prefix"*:*) return 0 ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+  done
+  return 0
+}
+
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb>
   local open=$1 line=$2 resolve=$3 held=$4 verb key note stripped
   stripped=${line//[[:space:]]/}
   [ -n "$stripped" ] || { printf '%s' "$open"; return 0; }
   verb=$(status_line_verb "$line")
   key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+  _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
+    || { printf '%s' "$open"; return 0; }
   case "$verb" in
     needs-decision|blocked)
       note=$(status_line_note "$line")
@@ -301,18 +396,23 @@ EOF
 # persisted open-set carries every still-open key forward across calls
 # regardless of how much new unrelated log content has since been folded in.
 #
+# The cursor format is `version`, `offset`, `ident`, then the folded open set.
+# FM_OPEN_DECISIONS_FOLD_VERSION must be bumped whenever
+# _fm_decision_fold_line semantics change, so persisted state from an older
+# interpretation is discarded and rebuilt from byte 0.
+#
 # Cursor invalidation is deliberately minimal, matching how status files are
 # ACTUALLY used in this repo: every one is created once (`>`) and only ever
 # appended to (`>>`) - never replaced, renamed, or rewritten in place. So the
-# only two ways a cursor can go stale are a shrink (truncated) or the file at
-# this path being a different file than before (replaced/rotated/recreated),
-# which a changed device+inode makes an O(1) check via a single `stat` call -
-# no content hashing, no re-reading the consumed prefix. Either signal falls
-# back to a full re-fold of the whole current file from byte 0 - byte for byte
-# what status_open_decisions itself would compute - and rewrites the cursor
-# from that clean baseline. A same-inode, same-size, in-place byte edit is NOT
-# detected; that is a deliberately accepted gap because no code path in this
-# repo ever does that to a status file.
+# ways a cursor can go stale are a fold-version mismatch, a shrink (truncated),
+# or the file at this path being a different file than before
+# (replaced/rotated/recreated), which a changed device+inode makes an O(1) check
+# via a single `stat` call - no content hashing, no re-reading the consumed
+# prefix. Any signal falls back to a full re-fold of the whole current file from
+# byte 0 - byte for byte what status_open_decisions itself would compute - and
+# rewrites the cursor from that clean baseline. A same-inode, same-size,
+# in-place byte edit is NOT detected; that is a deliberately accepted gap
+# because no code path in this repo ever does that to a status file.
 #
 # The other real failure mode is OUR OWN read failing (a stat/wc/tail I/O
 # error), not a malformed writer: every such read here is checked, and on
@@ -337,6 +437,8 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
+FM_OPEN_DECISIONS_FOLD_VERSION=4
+
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   local f=$1
@@ -348,8 +450,8 @@ _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
 }
 
 status_open_decisions_incremental() {  # <status-file>
-  local f=$1 cf offset ident open='' trusted_open='' cursor_data first rest ident_line
-  local size cur_ident resolve held chunk_file chunk_size line
+  local f=$1 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
+  local version='' size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   cf=$(_fm_open_decisions_cursor_path "$f")
   offset=0
@@ -358,14 +460,21 @@ status_open_decisions_incremental() {  # <status-file>
     if cursor_data=$(LC_ALL=C command cat "$cf" 2>/dev/null); then
       first=${cursor_data%%$'\n'*}
       case "$first" in
-        offset=*)
-          offset=${first#offset=}
+        version=*)
+          version=${first#version=}
+          [ "$version" = "$FM_OPEN_DECISIONS_FOLD_VERSION" ] || version=''
+          rest=${cursor_data#*$'\n'}
+          offset_line=${rest%%$'\n'*}
+          case "$offset_line" in
+            offset=*) offset=${offset_line#offset=} ;;
+            *) offset=0; version='' ;;
+          esac
           case "$offset" in
-            ''|*[!0-9]*) offset=0 ;;
+            ''|*[!0-9]*) offset=0; version='' ;;
             *)
-              case "$cursor_data" in
+              case "$rest" in
                 *$'\n'*)
-                  rest=${cursor_data#*$'\n'}
+                  rest=${rest#*$'\n'}
                   ident_line=${rest%%$'\n'*}
                   case "$ident_line" in
                     ident=*)
@@ -373,12 +482,12 @@ status_open_decisions_incremental() {  # <status-file>
                       case "$rest" in
                         *$'\n'*) open=${rest#*$'\n'} ;;
                       esac
-                      trusted_open=$open
+                      if [ -n "$version" ] && [ -n "$ident" ]; then trusted_open=$open; fi
                       ;;
-                    *) offset=0 ;;
+                    *) offset=0; version='' ;;
                   esac
                   ;;
-                *) offset=0 ;;
+                *) offset=0; version='' ;;
               esac
               ;;
           esac
@@ -397,9 +506,11 @@ status_open_decisions_incremental() {  # <status-file>
   size=${size//[[:space:]]/}
   case "$size" in ''|*[!0-9]*) printf '%s' "$trusted_open"; return 0 ;; esac
 
-  if [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$size" ]; then
+  if [ -z "$version" ] || [ -z "$ident" ] || [ "$ident" != "$cur_ident" ] || [ "$offset" -gt "$size" ]; then
     offset=0
     open=''
+    trusted_open=''
+    cursor_dirty=1
   fi
 
   if [ "$offset" -lt "$size" ]; then
@@ -424,8 +535,13 @@ status_open_decisions_incremental() {  # <status-file>
       open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     done < "$chunk_file"
     rm -f "$chunk_file"
+    offset=$size
+    cursor_dirty=1
+  fi
+  if [ "$cursor_dirty" -eq 1 ]; then
     {
-      printf 'offset=%s\n' "$size"
+      printf 'version=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION"
+      printf 'offset=%s\n' "$offset"
       printf 'ident=%s\n' "$cur_ident"
       # An `if` (not `[ -n "$open" ] && printf ...`) so the group's exit status
       # is always 0 even when open is empty (fully resolved) - a bare `&&`
@@ -594,16 +710,31 @@ crew_is_paused() {  # <id>
 # same space-separated file list as signal_reason_is_actionable. Files are mapped to
 # task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
 # provably working must surface, so an empty/unresolvable list returns 1.
+# A kind=secondmate task's .status signal is never absorbable here regardless of
+# busy evidence: that stream is the mate's routed-reply channel, so every append
+# is parent-directed content the supervisor must read (a routed reply, a newly
+# raised decision, a mirrored remote line), and a busy mate agent makes its note
+# more current, not less deliverable. Scoped to .status files - a mate's bare
+# turn-ended ping still uses the ordinary provably-working absorb.
 signal_crew_provably_working() {  # <file> ...
-  local f base task seen=""
+  local f base dir task seen=""
   for f in "$@"; do
     base=${f##*/}
+    dir=${f%/*}
+    [ "$dir" != "$f" ] || dir=.
     case "$base" in
       *.status)     task=${base%.status} ;;
       *.turn-ended) task=${base%.turn-ended} ;;
       *)            continue ;;
     esac
     [ -n "$task" ] || continue
+    case "$base" in
+      *.status)
+        if [ "$(grep '^kind=' "$dir/$task.meta" 2>/dev/null | tail -1 | cut -d= -f2-)" = secondmate ]; then
+          return 1
+        fi
+        ;;
+    esac
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
     crew_is_provably_working "$task" || return 1

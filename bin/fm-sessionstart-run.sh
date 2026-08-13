@@ -31,8 +31,9 @@
 # Every path exits 0, exactly like the nudge wrapper: a Claude SessionStart
 # exit 2 blocks session initialization, so a failed session start must reach the
 # agent as digest text it can act on, never as a refusal to open the session.
-# A lock another live session holds, broken GitHub auth, and a truncated digest
-# are all reported inside the digest for exactly that reason.
+# A lock another live session holds and a truncated digest are reported inside
+# the digest, while broken GitHub auth arrives through the deferred network
+# result inline or as a wake, for exactly that reason.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,13 +105,13 @@ case "$SOURCE" in
     ;;
   clear|compact)
     if session_start_completed; then
-      "$SCRIPT_DIR/fm-session-start.sh" --reemit || true
+      "$SCRIPT_DIR/fm-session-start.sh" --reemit --source "$SOURCE" || true
     else
-      "$SCRIPT_DIR/fm-session-start.sh" || true
+      "$SCRIPT_DIR/fm-session-start.sh" --source "$SOURCE" || true
     fi
     ;;
   *)
-    "$SCRIPT_DIR/fm-session-start.sh" || true
+    "$SCRIPT_DIR/fm-session-start.sh" --source "$SOURCE" || true
     ;;
 esac
 exit 0
