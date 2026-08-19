@@ -40,7 +40,7 @@ When the shared image eventually bakes these in, the runtime steps become short-
 The captain runs this once per host, after Docker Desktop is running and a GitHub bearer token is in place:
 
 ```sh
-cd /Users/rakib/dev
+cd <dev-workspace-checkout>   # the captain's local dev-workspace clone
 ./templates/ci-default/register-runner.sh firstmate
 ```
 
@@ -52,7 +52,7 @@ The firstmate-side mirror does not duplicate those steps because the contract is
 
 When `templates/ci-default/check-runners.sh` exits non-zero on the captain's host, `runner-firstmate` is in one of three states documented by the script's exit code:
 
-- Exit 1 with one or more `DOWN <name>` lines on stderr: the container is not running. `docker restart runner-firstname` preserves the registration; the captain owns the timing because it kills in-flight CI on this host.
+- Exit 1 with one or more `DOWN <name>` lines on stderr: the container is not running. `docker restart runner-firstmate` preserves the registration; the captain owns the timing because it kills in-flight CI on this host.
 - Exit 1 with `NO RUNNERS FOUND on this host - the fleet is empty.` on stderr: the container was wiped (a `deregister-runner.sh`, a `docker compose down -v`, or a Docker Desktop "Reset to factory defaults"). Re-run `register-runner.sh firstmate` to mint a fresh registration token.
 - Exit 2 with a `check-runners: docker daemon is not reachable.` (or `docker became unreachable during the check.`) on stderr: the Docker VM is down. The 2026-08-12 incidents, which hit every fleet runner in the same minute, are the canonical example; restart Docker Desktop, then `docker restart runner-firstmate` after the daemon answers.
 
@@ -60,9 +60,9 @@ Full recovery rules, the empirical record of the two 2026-08-12 incidents, and t
 
 ## CI workflow contract tests
 
-`tests/fm-workflow-self-hosted.test.sh` parses every `.github/workflows/*.yml` file and asserts:
+`tests/fm-workflow-self-hosted.test.sh` parses every `.github/workflows/*.yml` and `*.yaml` file - under each YAML backend the fleet has (`yq` on the captain's workstation, python3+PyYAML in the ci-runner image) - and asserts:
 
-- every Linux job dispatches to the captain's self-hosted ARM64 runner (label set `[self-hosted, linux, ARM64]`).
+- every Linux job dispatches to the captain's self-hosted ARM64 runner, carrying all three labels of the set `[self-hosted, linux, ARM64]`; a job that keeps only part of the set is an offender.
 - the only allowed GitHub-hosted runner label on this repo is `macos-latest` on `macos-stock-bash`, with `windows-herdr-spike.yml` on `windows-latest` as a manual-dispatch Windows-only spike.
 - the allow-list inventory matches the actual hosted-runner usage, so a silently widened allow-list trips the test on review.
 
@@ -78,4 +78,4 @@ Image rolls live in dev-workspace's template. The firstmate-side contract is "bu
 - `projects/dev-workspace/templates/ci-default/Dockerfile`: the single owner of the baked toolchain.
 - `bin/fm-install-shellcheck.sh`, `bin/fm-install-herdr.sh`, `bin/fm-install-treehouse.sh`: firstmate-owned install scripts that pin a per-architecture asset and SHA-256.
 - `tests/fm-workflow-self-hosted.test.sh`: firstmate-owned contract test that fails closed on a hosted-runner regression.
-- `tests/fm-install-shellcheck.test.sh`: firstmate-owned contract test that pins the per-architecture ShellCheck install contract.
+- `tests/fm-install-shellcheck.test.sh`: firstmate-owned contract test that runs the installer against stubbed download/verify tools and asserts the per-architecture asset, SHA-256 pin, and refusal paths.

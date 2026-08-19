@@ -145,9 +145,15 @@ jobs:
           # Node.js is not baked in either, but the lane needs tasks-axi
           # for backlog-handoff delegation. Both arrive from the same apt
           # step; one update + one install keeps the lane's setup to one
-          # cache miss.
-          apt-get update -y
-          apt-get install -y --no-install-recommends tmux nodejs npm
+          # cache miss. The runner container is long-lived, so both tools
+          # usually survive from the previous job: only reach for apt when
+          # one of them is actually missing, or every run re-pays the apt
+          # round trip and a transient archive failure reds a required lane
+          # with nothing to install.
+          command -v tmux >/dev/null && command -v npm >/dev/null || {
+            apt-get update -y
+            apt-get install -y --no-install-recommends tmux nodejs npm
+          }
           command -v tmux >/dev/null || { echo "::error::tmux is required for real afk injection e2e coverage"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           tmux -V
