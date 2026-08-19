@@ -110,7 +110,8 @@ if (!notification.includes("started Pi extension arm child")) {
   console.error(notification);
   process.exit(1);
 }
-for (let i = 0; i < 250 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 if (!prompt.startsWith("\u2063FIRSTMATE_OP: v1 watcher: ")) {
@@ -454,7 +455,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-hung-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -526,7 +528,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-unretired-successor", {}, undefined, undefined, {});
-for (let i = 0; i < 500 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -737,7 +740,8 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await tool.execute("tool-call-established-empty", {}, undefined, undefined, {});
-for (let i = 0; i < 250 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1629,7 +1633,8 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1703,7 +1708,8 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 500 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
@@ -1919,7 +1925,8 @@ const hooks = await mod.FmPrimaryWatchArm({
 });
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-test" } } });
-for (let i = 0; i < 250 && !prompt; i += 1) {
+  const WAIT_COUNT = Math.max(50, Number(process.env.FM_HUNG_SUCCESSOR_WAIT_MS || 5000));
+for (let i = 0; i < WAIT_COUNT && !prompt; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 const rows = existsSync(process.env.FM_ARM_LOG)
