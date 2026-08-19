@@ -95,6 +95,7 @@ init_changed_fixture_repo() {
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
+    fm-install-node.test.sh \
     fm-install-shellcheck.test.sh \
     fm-workflow-self-hosted.test.sh \
     fm-ask-user-authority.test.sh \
@@ -120,6 +121,7 @@ init_changed_fixture_repo() {
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   : >"$repo/bin/fm-install-shellcheck.sh"
+  : >"$repo/bin/fm-install-node.sh"
   mkdir -p "$repo/.github/workflows"
   : >"$repo/.github/workflows/ci.yml"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
@@ -176,13 +178,16 @@ test_changed_dependency_selection_and_unmapped_failure() {
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm non-bin-source-change
 
   printf '\n' >>"$repo/bin/fm-install-shellcheck.sh"
+  printf '\n' >>"$repo/bin/fm-install-node.sh"
   printf '\n' >>"$repo/.github/workflows/ci.yml"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
   assert_contains "$listed" "tests/fm-install-shellcheck.test.sh" \
     "installer source must select the installer contract guard"
+  assert_contains "$listed" "tests/fm-install-node.test.sh" \
+    "node installer source must select the node installer contract guard"
   assert_contains "$listed" "tests/fm-workflow-self-hosted.test.sh" \
     "workflow source must select the self-hosted runner guard"
-  git -C "$repo" add bin/fm-install-shellcheck.sh .github
+  git -C "$repo" add bin/fm-install-shellcheck.sh bin/fm-install-node.sh .github
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm guard-source-change
 
   printf '\n' >>"$repo/src/unmapped.ts"

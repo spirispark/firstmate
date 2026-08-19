@@ -59,12 +59,19 @@ jobs:
           # ci-runner is a slim ARM64 Ubuntu 24.04 image with shellcheck,
           # actionlint, jq, python3+PyYAML, gitleaks, osv-scanner, codex,
           # php, rsync. Node.js is not in that set, so tasks-axi cannot
-          # install until Node is on PATH. Documented in docs/ci-runner.md
-          # so a future image roll that adds node would let this step
-          # short-circuit.
+          # install until Node is on PATH. Several behavior tests also
+          # load .ts sources directly with `pathToFileURL(...)`, which
+          # requires Node 22.6+ - the Ubuntu archive's stock nodejs (Node
+          # 18 on Noble) cannot parse .ts, so we install the same pinned
+          # Node.js LTS that bin/fm-install-node.sh provides. The script
+          # is SHA-256 verified per arch so a curl-blocked or compromised
+          # mirror reds the lane loudly instead of feeding the runner
+          # the wrong version. Documented in docs/ci-runner.md so a
+          # future image roll that adds node v22 LTS would let this
+          # step short-circuit.
           command -v npm >/dev/null || {
-            apt-get update -y
-            apt-get install -y --no-install-recommends nodejs npm
+            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           npm install -g tasks-axi
@@ -94,9 +101,15 @@ jobs:
       - name: Install tasks-axi (needs Node.js; not baked into ci-runner)
         run: |
           set -eu
+          # ci-runner does not bake Node.js (docs/ci-runner.md owns that
+          # contract). The pinned installer in bin/fm-install-node.sh
+          # restores the Node 22 LTS line that ubuntu-latest previously
+          # provided by default - required by behavior tests that load
+          # .ts sources directly. SHA-256-verified per arch so a
+          # blocked or compromised mirror reds the lane loudly.
           command -v npm >/dev/null || {
-            apt-get update -y
-            apt-get install -y --no-install-recommends nodejs npm
+            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           npm install -g tasks-axi
@@ -143,16 +156,23 @@ jobs:
           # The portable serial lane hosts the AFK injection e2e tests,
           # which need a real tmux. ci-runner does not bake tmux in.
           # Node.js is not baked in either, but the lane needs tasks-axi
-          # for backlog-handoff delegation. Both arrive from the same apt
-          # step; one update + one install keeps the lane's setup to one
-          # cache miss. The runner container is long-lived, so both tools
-          # usually survive from the previous job: only reach for apt when
-          # one of them is actually missing, or every run re-pays the apt
-          # round trip and a transient archive failure reds a required lane
-          # with nothing to install.
+          # for backlog-handoff delegation, and several behavior tests
+          # load .ts sources directly - which requires Node 22.6+, not
+          # the Ubuntu archive's stock Node 18 that apt installs by
+          # default. Node.js therefore arrives via the pinned,
+          # SHA-256-verified installer bin/fm-install-node.sh, restoring
+          # the Node 22 LTS line that the historical ubuntu-latest
+          # runner provided by default. tmux still comes from apt as
+          # before. The runner container is long-lived, so both tools
+          # usually survive from the previous job: only reach for the
+          # installer / apt when one of them is actually missing, or
+          # every run re-pays the round trip and a transient archive
+          # failure reds a required lane with nothing to install.
           command -v tmux >/dev/null && command -v npm >/dev/null || {
             apt-get update -y
-            apt-get install -y --no-install-recommends tmux nodejs npm
+            apt-get install -y --no-install-recommends tmux
+            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           }
           command -v tmux >/dev/null || { echo "::error::tmux is required for real afk injection e2e coverage"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }

@@ -29,9 +29,10 @@ Firstmate carries one job that cannot run on the ci-runner Linux container: `mac
 
 Firstmate's CI installs three tools at runtime because the shared image does not bake them in:
 
-- `tasks-axi` (needed by the portable parallel and serial lanes): installed via `npm install -g tasks-axi`. Node.js is not baked in, so the install step also pulls `nodejs` and `npm` from apt before npm can run.
-- `tmux` (needed by the AFK injection e2e tests in the portable serial lane): installed via `apt-get install -y tmux` in the lane's setup step. The serial lane combines the apt-get step with the nodejs install so the lane pays for one apt cache miss.
+- `tasks-axi` (needed by the portable parallel and serial lanes): installed via `npm install -g tasks-axi`. Node.js is not baked in, so the install step pulls it first via `bin/fm-install-node.sh` (pinned Node.js 22 LTS, SHA-256 verified per arch) before npm can run.
+- `tmux` (needed by the AFK injection e2e tests in the portable serial lane): installed via `apt-get install -y tmux` in the lane's setup step. The serial lane combines the apt-get tmux step with the Node.js install so the lane pays for one setup round trip.
 - Herdr and Treehouse (needed by the `tests-herdr` lane): installed by `bin/fm-install-herdr.sh` and `bin/fm-install-treehouse.sh`. Both already pin a per-architecture asset and SHA-256 (Herdr `herdr-linux-aarch64` SHA-256 `544e0002...`, Treehouse `treehouse-v<pin>-linux-arm64.tar.gz`).
+- Node.js itself (needed by `tasks-axi` and by behavior tests that load `.ts` sources directly with `pathToFileURL(...)`, which requires Node 22.6+): installed by `bin/fm-install-node.sh`. The script pins Node.js v22.23.2 (LTS `Jod`) per architecture - `node-v22.23.2-linux-arm64.tar.xz` SHA-256 `fff4078c...` for `Linux-aarch64|Linux-arm64`, `node-v22.23.2-linux-x64.tar.xz` SHA-256 `d60acfe0...` for `Linux-x86_64`. The Ubuntu archive's stock `nodejs` (Node 18 on Noble) cannot parse `.ts`, so the runtime install restores the Node 22 LTS line that the historical `ubuntu-latest` runner provided by default.
 
 When the shared image eventually bakes these in, the runtime steps become short-circuit no-ops; the apt-get branches test for `command -v` and only install when the binary is missing.
 
@@ -76,6 +77,6 @@ Image rolls live in dev-workspace's template. The firstmate-side contract is "bu
 
 - `projects/dev-workspace/templates/ci-default/README.md`: the single owner of the operator setup, recovery, and image-roll surface that firstmate shares with every other repo on this fleet.
 - `projects/dev-workspace/templates/ci-default/Dockerfile`: the single owner of the baked toolchain.
-- `bin/fm-install-shellcheck.sh`, `bin/fm-install-herdr.sh`, `bin/fm-install-treehouse.sh`: firstmate-owned install scripts that pin a per-architecture asset and SHA-256.
+- `bin/fm-install-shellcheck.sh`, `bin/fm-install-herdr.sh`, `bin/fm-install-treehouse.sh`, `bin/fm-install-node.sh`: firstmate-owned install scripts that pin a per-architecture asset and SHA-256.
 - `tests/fm-workflow-self-hosted.test.sh`: firstmate-owned contract test that fails closed on a hosted-runner regression.
-- `tests/fm-install-shellcheck.test.sh`: firstmate-owned contract test that runs the installer against stubbed download/verify tools and asserts the per-architecture asset, SHA-256 pin, and refusal paths.
+- `tests/fm-install-shellcheck.test.sh`, `tests/fm-install-node.test.sh`: firstmate-owned contract tests that run each installer against stubbed download/verify tools and assert the per-architecture asset, SHA-256 pin, and refusal paths.
