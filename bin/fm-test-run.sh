@@ -140,14 +140,15 @@ family_for_basename() {
     fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|\
     fm-graphify-harness.test.sh|fm-grok-harness.test.sh|\
-    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
+    fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-herdr-lab.test.sh|\
+    fm-install-shellcheck.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-pipeline-engine.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
     fm-tmux-submit-busy.test.sh|fm-trace-context-lib.test.sh|\
-    fm-transition-lib.test.sh|\
+    fm-transition-lib.test.sh|fm-workflow-self-hosted.test.sh|\
     fm-test-run.test.sh|fm-test-isolation-proof.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
