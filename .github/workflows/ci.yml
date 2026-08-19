@@ -75,10 +75,13 @@ jobs:
           # failing the .ts parse the rest of this lane requires.
           # Only short-circuit when the installed node is already on the
           # pinned LTS line; otherwise install the pinned binary even
-          # if /usr/bin/npm exists.
+          # if /usr/bin/npm exists. The install lands the entire
+          # Node.js tree at $RUNNER_TEMP/node so npm/npx can resolve
+          # their `../lib/cli.js` from $RUNNER_TEMP/node/bin; only
+          # $RUNNER_TEMP/node/bin goes on PATH.
           if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
-            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
-            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            bin/fm-install-node.sh "$RUNNER_TEMP/node"
+            echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
           fi
           command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
@@ -121,10 +124,13 @@ jobs:
           # the .ts parse the rest of this lane requires. Only
           # short-circuit when the installed node is already on the
           # pinned LTS line; otherwise install the pinned binary even
-          # if /usr/bin/npm exists.
+          # if /usr/bin/npm exists. The install lands the entire
+          # Node.js tree at $RUNNER_TEMP/node so npm/npx can resolve
+          # their `../lib/cli.js` from $RUNNER_TEMP/node/bin; only
+          # $RUNNER_TEMP/node/bin goes on PATH.
           if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
-            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
-            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            bin/fm-install-node.sh "$RUNNER_TEMP/node"
+            echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
           fi
           command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
@@ -191,14 +197,18 @@ jobs:
           # `command -v npm` while still failing the .ts parse the
           # rest of this lane requires. Only reach for apt when tmux
           # is missing, and only call the Node.js installer when the
-          # installed node is below the pinned LTS line.
+          # installed node is below the pinned LTS line. The install
+          # lands the entire Node.js tree at $RUNNER_TEMP/node so
+          # npm/npx can resolve their `../lib/cli.js` from
+          # $RUNNER_TEMP/node/bin; only $RUNNER_TEMP/node/bin goes
+          # on PATH.
           if ! command -v tmux >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y --no-install-recommends tmux
           fi
           if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
-            bin/fm-install-node.sh "$RUNNER_TEMP/bin"
-            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            bin/fm-install-node.sh "$RUNNER_TEMP/node"
+            echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
           fi
           command -v tmux >/dev/null || { echo "::error::tmux is required for real afk injection e2e coverage"; exit 1; }
           command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }

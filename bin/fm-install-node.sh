@@ -8,6 +8,17 @@
 # Usage:
 #   fm-install-node.sh <destination-directory>
 #
+# Install shape: the ENTIRE extracted tree (bin/, lib/, include/, share/)
+# lands at <destination-directory>, so <destination-directory>/bin/{node,
+# npm, npx, corepack} sits on PATH and npm/npx can resolve their
+# `../lib/cli.js` from <destination-directory>/bin. A previous version of
+# this script copied only the four executables into <destination-directory>
+# itself, which left npm unable to find `../lib/cli.js` (npm resolves that
+# path relative to its own install location, so copying npm without its
+# tree breaks the very command this script is supposed to enable). A test
+# in tests/fm-install-node.test.sh exercises the install end-to-end so
+# this regression would be caught on review.
+#
 # Pins Node.js v22.23.2 (LTS "Jod"). The minimum LTS line that supports
 # importing TypeScript files natively (Node.js 22.6+) is required by several
 # behavior tests (e.g. tests/fm-calm-pi-extension.test.sh's
@@ -88,13 +99,22 @@ EXTRACTED="$TMP/node-v${FM_NODE_CI_VERSION}-linux-$(case "$arch" in x86_64) echo
   || die "extracted binary did not report pinned version v${FM_NODE_CI_VERSION}"
 
 mkdir -p "$DESTINATION"
-install -m 0755 "$EXTRACTED/bin/node" "$DESTINATION/node"
-install -m 0755 "$EXTRACTED/bin/npm" "$DESTINATION/npm"
-install -m 0755 "$EXTRACTED/bin/npx" "$DESTINATION/npx"
-if [ -x "$EXTRACTED/bin/corepack" ]; then
-  install -m 0755 "$EXTRACTED/bin/corepack" "$DESTINATION/corepack"
-fi
+# Copy the entire extracted tree so npm/npx can resolve `../lib/cli.js`
+# from <destination>/bin/npm. Copying individual executables into
+# <destination> leaves npm with no lib/ directory and every npm invocation
+# fails with `Cannot find module '../lib/cli.js'`. tarballs ship bin/, lib/,
+# include/, share/ - the cp -R keeps all four so the install stays
+# self-contained at the destination without needing /usr/lib to hold the
+# supporting files.
+cp -R "$EXTRACTED/." "$DESTINATION/"
+# tarballs ship files mode 0644; chmod the executables we put on PATH so
+# they survive a host that mounts the destination with restrictive perms.
+chmod 0755 \
+  "$DESTINATION/bin/node" \
+  "$DESTINATION/bin/npm" \
+  "$DESTINATION/bin/npx" \
+  "$DESTINATION/bin/corepack" 2>/dev/null || true
 
 printf 'fm-install-node.sh: installed node %s to %s\n' \
-  "$("$DESTINATION/node" --version)" "$DESTINATION/node" >&2
-"$DESTINATION/node" --version
+  "$("$DESTINATION/bin/node" --version)" "$DESTINATION/bin" >&2
+"$DESTINATION/bin/node" --version

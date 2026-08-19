@@ -50,10 +50,11 @@ test_aarch64_host_installs_the_aarch64_asset() {
     "https://nodejs.org/dist/v${VERSION}/node-v${VERSION}-linux-arm64.tar.xz" \
     "$tmp/curl.log" \
     "aarch64 host did not request the official aarch64 release asset"
-  [ -x "$destination/node" ] || fail "aarch64 install left no node binary at $destination/node"
-  [ -x "$destination/npm" ] || fail "aarch64 install left no npm binary at $destination/npm"
-  [ -x "$destination/npx" ] || fail "aarch64 install left no npx binary at $destination/npx"
-  "$destination/node" --version >/dev/null \
+  [ -x "$destination/bin/node" ] || fail "aarch64 install left no node binary at $destination/bin/node"
+  [ -x "$destination/bin/npm" ] || fail "aarch64 install left no npm binary at $destination/bin/npm"
+  [ -x "$destination/bin/npx" ] || fail "aarch64 install left no npx binary at $destination/bin/npx"
+  [ -d "$destination/lib" ] || fail "aarch64 install did not stage the lib/ tree (npm needs ../lib/cli.js from bin/npm)"
+  "$destination/bin/node" --version >/dev/null \
     || fail "installed node binary is not executable"
   pass "Linux-aarch64 installs the pinned aarch64 Node.js asset"
 }
@@ -70,7 +71,8 @@ test_arm64_alias_installs_the_aarch64_asset() {
   expect_code 0 "$rc" "arm64 install"$'\n'"$out"
   assert_grep "node-v${VERSION}-linux-arm64.tar.xz" "$tmp/curl.log" \
     "Linux-arm64 did not resolve to the aarch64 asset"
-  [ -x "$destination/node" ] || fail "arm64 install left no node binary at $destination/node"
+  [ -x "$destination/bin/node" ] || fail "arm64 install left no node binary at $destination/bin/node"
+  [ -d "$destination/lib" ] || fail "arm64 install did not stage the lib/ tree"
   pass "Linux-arm64 resolves to the same pinned aarch64 asset"
 }
 
@@ -86,7 +88,8 @@ test_x86_64_host_installs_the_x86_64_asset() {
     "https://nodejs.org/dist/v${VERSION}/node-v${VERSION}-linux-x64.tar.xz" \
     "$tmp/curl.log" \
     "x86_64 host did not request the official x86_64 release asset"
-  [ -x "$destination/node" ] || fail "x86_64 install left no node binary at $destination/node"
+  [ -x "$destination/bin/node" ] || fail "x86_64 install left no node binary at $destination/bin/node"
+  [ -d "$destination/lib" ] || fail "x86_64 install did not stage the lib/ tree"
   pass "Linux-x86_64 installs the pinned x86_64 Node.js asset"
 }
 
@@ -101,7 +104,7 @@ test_cross_arch_digest_is_refused() {
   out=$(fm_run_install "$fakebin" "$tmp" "$FM_NODE_CI_SHA256_X86_64" "$destination") || rc=$?
   [ "$rc" -ne 0 ] || fail "aarch64 install accepted the x86_64 digest"$'\n'"$out"
   assert_contains "$out" "checksum mismatch" "digest refusal did not name the checksum mismatch"
-  assert_absent "$destination/node" "a digest mismatch must not install a binary"
+  assert_absent "$destination/bin/node" "a digest mismatch must not install a binary"
   pass "a digest that does not match the host arch pin is refused"
 }
 
@@ -118,7 +121,7 @@ test_unsupported_platform_is_refused_before_download() {
   assert_contains "$out" "unsupported platform" "refusal did not name the unsupported platform"
   assert_contains "$out" "Darwin-arm64" "refusal did not report the actual host platform"
   assert_absent "$tmp/curl.log" "an unsupported platform must refuse before any download"
-  assert_absent "$destination/node" "an unsupported platform must not install a binary"
+  assert_absent "$destination/bin/node" "an unsupported platform must not install a binary"
   pass "unsupported platforms are refused loudly before any download"
 }
 
@@ -135,19 +138,19 @@ test_wrong_binary_version_is_refused() {
   [ "$rc" -ne 0 ] || fail "install accepted a binary reporting the wrong version"$'\n'"$out"
   assert_contains "$out" "did not report pinned version" \
     "version refusal did not name the pinned version"
-  assert_absent "$destination/node" \
+  assert_absent "$destination/bin/node" \
     "a version mismatch must not leave a binary at the destination"
 
   # A destination the caller is about to put on PATH may already hold the
   # pinned binary from an earlier install; a refused install must leave it be
   # rather than replace it with the version it just rejected.
-  mkdir -p "$destination"
-  printf 'pinned-sentinel\n' > "$destination/node"
+  mkdir -p "$destination/bin"
+  printf 'pinned-sentinel\n' > "$destination/bin/node"
   rc=0
   out=$(FM_FAKE_BINARY_VERSION=22.11.0 \
     fm_run_install "$fakebin" "$tmp" "$FM_NODE_CI_SHA256_AARCH64" "$destination") || rc=$?
   [ "$rc" -ne 0 ] || fail "install accepted a binary reporting the wrong version"$'\n'"$out"
-  [ "$(cat "$destination/node")" = "pinned-sentinel" ] \
+  [ "$(cat "$destination/bin/node")" = "pinned-sentinel" ] \
     || fail "a refused install overwrote the binary already at the destination"
   pass "a binary that does not report the pinned version ${VERSION} is refused"
 }
