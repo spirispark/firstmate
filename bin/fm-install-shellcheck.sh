@@ -61,7 +61,9 @@ ACTUAL_SHA256=$(sha256sum "$TMP/$ARCHIVE" | awk '{print $1}')
   exit 1
 }
 tar -xJf "$TMP/$ARCHIVE" -C "$TMP"
+EXTRACTED="$TMP/shellcheck-v${VERSION}/shellcheck"
+chmod 0755 "$EXTRACTED"
+"$EXTRACTED" --version | grep -F "version: ${VERSION}" >/dev/null \
+  || { printf 'fm-install-shellcheck.sh: downloaded binary did not report pinned version %s\n' "$VERSION" >&2; exit 1; }
 mkdir -p "$DESTINATION"
-install -m 0755 "$TMP/shellcheck-v${VERSION}/shellcheck" "$DESTINATION/shellcheck"
-"$DESTINATION/shellcheck" --version | grep -F "version: ${VERSION}" >/dev/null \
-  || { printf 'fm-install-shellcheck.sh: installed binary did not report pinned version %s\n' "$VERSION" >&2; exit 1; }
+install -m 0755 "$EXTRACTED" "$DESTINATION/shellcheck"

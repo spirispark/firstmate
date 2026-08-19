@@ -16,6 +16,9 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/shellcheck-install-helpers.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/shellcheck-install-helpers.sh"
 
 LINT="$ROOT/bin/fm-lint.sh"
 INSTALLER="$ROOT/bin/fm-install-shellcheck.sh"
@@ -242,66 +245,17 @@ test_pins_an_explicit_version() {
 test_installer_retries_transient_download_failure() {
   local tmp fakebin destination out
   tmp=$(fm_test_tmproot fm-shellcheck-download)
-  fakebin=$(fm_fakebin "$tmp")
-  destination="$tmp/bin"
-
-  cat > "$fakebin/curl" <<'SH'
-#!/usr/bin/env bash
-count=0
-[ ! -f "$CURL_COUNT" ] || count=$(cat "$CURL_COUNT")
-count=$((count + 1))
-printf '%s\n' "$count" > "$CURL_COUNT"
-# Reproduce the CI incident: the release endpoint returned 503 for all three
-# formerly configured attempts before recovering.
-[ "$count" -gt 3 ] || exit 22
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    : > "$2"
-    exit 0
-  fi
-  shift
-done
-exit 2
-SH
-  cat > "$fakebin/sha256sum" <<'SH'
-#!/usr/bin/env bash
-printf '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  %s\n' "$1"
-SH
-  cat > "$fakebin/tar" <<'SH'
-#!/usr/bin/env bash
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-C" ]; then
-    mkdir -p "$2/shellcheck-v0.11.0"
-    cat > "$2/shellcheck-v0.11.0/shellcheck" <<'EOF'
-#!/usr/bin/env bash
-printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
-EOF
-    chmod +x "$2/shellcheck-v0.11.0/shellcheck"
-    exit 0
-  fi
-  shift
-done
-exit 2
-SH
-  cat > "$fakebin/sleep" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
   # Pin the installer to a Linux x86_64 host. The installer is Linux-only by
   # contract (docs/ci-runner.md) and refuses on Darwin or unknown platforms,
   # so a host-side `uname` from the captain's macOS workstation would short-
   # circuit the install path the test is exercising.
-  cat > "$fakebin/uname" <<'SH'
-#!/usr/bin/env bash
-case "${1:-}" in
-  -s) printf '%s\n' Linux ;;
-  -m) printf '%s\n' x86_64 ;;
-  *) printf '%s\n%s\n' Linux x86_64 ;;
-esac
-SH
-  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar" "$fakebin/sleep" "$fakebin/uname"
+  fakebin=$(fm_shellcheck_fakebin "$tmp" Linux x86_64)
+  destination="$tmp/bin"
 
-  out=$(CURL_COUNT="$tmp/curl-count" PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) \
+  # Reproduce the CI incident: the release endpoint returned 503 for all three
+  # formerly configured attempts before recovering.
+  out=$(FM_FAKE_CURL_COUNT="$tmp/curl-count" FM_FAKE_CURL_FAILURES=3 \
+    PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) \
     || fail "installer did not recover from a transient download failure"$'\n'"$out"
   [ "$(cat "$tmp/curl-count")" -eq 4 ] || fail "installer did not recover after three failed downloads"
   assert_contains "$out" "download attempt 3 failed; retrying" "installer did not disclose its third retry"

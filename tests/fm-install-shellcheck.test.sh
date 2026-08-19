@@ -12,82 +12,17 @@
 # shimmed on PATH, so the assertions are about what the install actually
 # does - which asset URL it requests for a host arch, which digest it
 # accepts, and which failures it refuses - not about what its source text
-# says. The two SHA-256 constants below are the upstream digests of the
-# official ShellCheck v0.11.0 Linux release assets; they are the contract
-# the install must enforce, so changing a pin in the script without
-# re-verifying it upstream fails here.
+# says. The shims, and the upstream SHA-256 digests they enforce, come from
+# tests/shellcheck-install-helpers.sh, which tests/fm-lint.test.sh shares so
+# an installer change lands in one shim set rather than two.
 set -u
 
-# shellcheck source=tests/lib.sh
+# shellcheck source=tests/shellcheck-install-helpers.sh
 # shellcheck disable=SC1091
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/shellcheck-install-helpers.sh"
 
 INSTALL="$ROOT/bin/fm-install-shellcheck.sh"
-VERSION="$("$ROOT/bin/fm-lint.sh" --required-version)"
-
-SHA256_X86_64=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-SHA256_AARCH64=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
-
-# fm_shellcheck_fakebin <tmp> <uname-s> <uname-m>: build a PATH shim dir that
-# pins the host platform, records every requested download URL, reports the
-# digest named by FM_FAKE_SHA256, and unpacks an archive whose layout and
-# reported version come from FM_FAKE_ARCHIVE_VERSION/FM_FAKE_BINARY_VERSION.
-fm_shellcheck_fakebin() {
-  local tmp=$1 os=$2 machine=$3 fakebin
-  fakebin=$(fm_fakebin "$tmp")
-
-  cat > "$fakebin/uname" <<SH
-#!/usr/bin/env bash
-case "\${1:-}" in
-  -s) printf '%s\n' '$os' ;;
-  -m) printf '%s\n' '$machine' ;;
-  *) printf '%s\n%s\n' '$os' '$machine' ;;
-esac
-SH
-
-  cat > "$fakebin/curl" <<'SH'
-#!/usr/bin/env bash
-url=""
-out=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o) out=${2:-}; shift 2 ;;
-    -*) shift ;;
-    *) url=$1; shift ;;
-  esac
-done
-printf '%s\n' "$url" >> "$FM_FAKE_CURL_LOG"
-[ -n "$out" ] || exit 2
-: > "$out"
-SH
-
-  cat > "$fakebin/sha256sum" <<'SH'
-#!/usr/bin/env bash
-printf '%s  %s\n' "$FM_FAKE_SHA256" "$1"
-SH
-
-  cat > "$fakebin/tar" <<'SH'
-#!/usr/bin/env bash
-dest=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-C" ]; then
-    dest=${2:-}
-    break
-  fi
-  shift
-done
-[ -n "$dest" ] || exit 2
-mkdir -p "$dest/shellcheck-v$FM_FAKE_ARCHIVE_VERSION"
-cat > "$dest/shellcheck-v$FM_FAKE_ARCHIVE_VERSION/shellcheck" <<EOF
-#!/usr/bin/env bash
-printf 'ShellCheck - shell script analysis tool\nversion: $FM_FAKE_BINARY_VERSION\n'
-EOF
-chmod +x "$dest/shellcheck-v$FM_FAKE_ARCHIVE_VERSION/shellcheck"
-SH
-
-  chmod +x "$fakebin/uname" "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar"
-  printf '%s\n' "$fakebin"
-}
+VERSION="$FM_SHELLCHECK_VERSION"
 
 # fm_run_install <fakebin> <tmp> <sha> <destination>: run the installer under
 # the shims and echo its combined output; the caller owns the exit code.
@@ -109,7 +44,7 @@ test_aarch64_host_installs_the_aarch64_asset() {
   fakebin=$(fm_shellcheck_fakebin "$tmp" Linux aarch64)
   destination="$tmp/bin"
 
-  out=$(fm_run_install "$fakebin" "$tmp" "$SHA256_AARCH64" "$destination") || rc=$?
+  out=$(fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_AARCH64" "$destination") || rc=$?
   expect_code 0 "$rc" "aarch64 install"$'\n'"$out"
   assert_grep \
     "https://github.com/koalaman/shellcheck/releases/download/v${VERSION}/shellcheck-v${VERSION}.linux.aarch64.tar.xz" \
@@ -127,7 +62,7 @@ test_arm64_alias_installs_the_aarch64_asset() {
   fakebin=$(fm_shellcheck_fakebin "$tmp" Linux arm64)
   destination="$tmp/bin"
 
-  out=$(fm_run_install "$fakebin" "$tmp" "$SHA256_AARCH64" "$destination") || rc=$?
+  out=$(fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_AARCH64" "$destination") || rc=$?
   expect_code 0 "$rc" "arm64 install"$'\n'"$out"
   assert_grep "shellcheck-v${VERSION}.linux.aarch64.tar.xz" "$tmp/curl.log" \
     "Linux-arm64 did not resolve to the aarch64 asset"
@@ -141,7 +76,7 @@ test_x86_64_host_installs_the_x86_64_asset() {
   fakebin=$(fm_shellcheck_fakebin "$tmp" Linux x86_64)
   destination="$tmp/bin"
 
-  out=$(fm_run_install "$fakebin" "$tmp" "$SHA256_X86_64" "$destination") || rc=$?
+  out=$(fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_X86_64" "$destination") || rc=$?
   expect_code 0 "$rc" "x86_64 install"$'\n'"$out"
   assert_grep \
     "https://github.com/koalaman/shellcheck/releases/download/v${VERSION}/shellcheck-v${VERSION}.linux.x86_64.tar.xz" \
@@ -159,7 +94,7 @@ test_cross_arch_digest_is_refused() {
   fakebin=$(fm_shellcheck_fakebin "$tmp" Linux aarch64)
   destination="$tmp/bin"
 
-  out=$(fm_run_install "$fakebin" "$tmp" "$SHA256_X86_64" "$destination") || rc=$?
+  out=$(fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_X86_64" "$destination") || rc=$?
   [ "$rc" -ne 0 ] || fail "aarch64 install accepted the x86_64 digest"$'\n'"$out"
   assert_contains "$out" "checksum mismatch" "digest refusal did not name the checksum mismatch"
   assert_absent "$destination/shellcheck" "a digest mismatch must not install a binary"
@@ -174,7 +109,7 @@ test_unsupported_platform_is_refused_before_download() {
   fakebin=$(fm_shellcheck_fakebin "$tmp" Darwin arm64)
   destination="$tmp/bin"
 
-  out=$(fm_run_install "$fakebin" "$tmp" "$SHA256_AARCH64" "$destination") || rc=$?
+  out=$(fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_AARCH64" "$destination") || rc=$?
   [ "$rc" -ne 0 ] || fail "unsupported platform did not refuse"$'\n'"$out"
   assert_contains "$out" "unsupported platform" "refusal did not name the unsupported platform"
   assert_contains "$out" "Darwin-arm64" "refusal did not report the actual host platform"
@@ -192,10 +127,24 @@ test_wrong_binary_version_is_refused() {
   destination="$tmp/bin"
 
   out=$(FM_FAKE_BINARY_VERSION=0.10.0 \
-    fm_run_install "$fakebin" "$tmp" "$SHA256_AARCH64" "$destination") || rc=$?
+    fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_AARCH64" "$destination") || rc=$?
   [ "$rc" -ne 0 ] || fail "install accepted a binary reporting the wrong version"$'\n'"$out"
   assert_contains "$out" "did not report pinned version ${VERSION}" \
     "version refusal did not name the pinned version"
+  assert_absent "$destination/shellcheck" \
+    "a version mismatch must not leave a binary at the destination"
+
+  # A destination the caller is about to put on PATH may already hold the
+  # pinned binary from an earlier install; a refused install must leave it be
+  # rather than replace it with the version it just rejected.
+  mkdir -p "$destination"
+  printf 'pinned-sentinel\n' > "$destination/shellcheck"
+  rc=0
+  out=$(FM_FAKE_BINARY_VERSION=0.10.0 \
+    fm_run_install "$fakebin" "$tmp" "$FM_SHELLCHECK_SHA256_AARCH64" "$destination") || rc=$?
+  [ "$rc" -ne 0 ] || fail "install accepted a binary reporting the wrong version"$'\n'"$out"
+  [ "$(cat "$destination/shellcheck")" = "pinned-sentinel" ] \
+    || fail "a refused install overwrote the binary already at the destination"
   pass "a binary that does not report the pinned version ${VERSION} is refused"
 }
 
