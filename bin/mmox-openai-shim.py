@@ -211,13 +211,25 @@ def _is_anthropic_retryable(body: Dict[str, Any], status: int) -> bool:
     return False
 
 
+class _AnthropicHttpError(RuntimeError):
+    """Upstream returned an HTTP error. Carries the parsed status and body so
+    the retry layer can classify without parsing the message string."""
+
+    def __init__(self, *, status: int, body: Dict[str, Any]):
+        message = f"anthropic returned {status}: {json.dumps(body, ensure_ascii=False)[:400]}"
+        super().__init__(message)
+        self.status = status
+        self.body = body
+
+
 def _call_direct_anthropic(
     payload: Dict[str, Any], *, timeout_s: int
 ) -> Dict[str, Any]:
     """POST one OpenAI-shape chat request to MiniMax via Anthropic-compat API.
 
-    Raises RuntimeError on transport/auth errors; returns parsed JSON body on
-    success. Caller is responsible for retry policy.
+    Raises _AnthropicHttpError on HTTP error responses (carries status+body),
+    plain RuntimeError on transport/auth errors (no status), and returns the
+    parsed JSON body on success. Caller is responsible for retry policy.
     """
     api_key = _load_api_key()
     region, base_url = _load_region_and_base_url()
@@ -264,9 +276,7 @@ def _call_direct_anthropic(
         ) from exc
 
     if status >= 400:
-        raise RuntimeError(
-            f"anthropic returned {status}: {json.dumps(body, ensure_ascii=False)[:400]}"
-        )
+        raise _AnthropicHttpError(status=status, body=body)
 
     return body
 
@@ -274,23 +284,46 @@ def _call_direct_anthropic(
 def _run_direct(
     payload: Dict[str, Any], *, timeout_s: int, retry_attempts: int, retry_base_sleep: float
 ) -> Dict[str, Any]:
-    """Run _call_direct_anthropic with the same retry envelope as the mmx path."""
-    last_err: Optional[str] = None
+    """Run _call_direct_anthropic with retry only on retryable upstream errors.
+
+    Honors _is_anthropic_retryable: 400/401/403/etc. surface immediately, while
+    408/409/429/5xx/529 (and rate_limit_error / overloaded_error / timeout_error
+    bodies) retry up to retry_attempts. Transport errors (URLError, OSError) are
+    treated as transient and retried.
+    """
+    last_err: Optional[BaseException] = None
     for attempt in range(1, retry_attempts + 1):
         try:
             body = _call_direct_anthropic(payload, timeout_s=timeout_s)
             return body
-        except RuntimeError as exc:
-            last_err = str(exc)
+        except _AnthropicHttpError as exc:
+            last_err = exc
+            # Classify using the helper the PR already had; non-retryable ends
+            # the loop immediately instead of hammering a 4xx.
+            if not _is_anthropic_retryable(exc.body, exc.status):
+                break
             if attempt >= retry_attempts:
                 break
             sleep_for = retry_base_sleep * (2 ** (attempt - 1))
             sys.stderr.write(
                 f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
-                f"{last_err[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+                f"{str(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
             )
             time.sleep(sleep_for)
-    raise RuntimeError(last_err or "unknown direct error")
+        except RuntimeError as exc:
+            # Transport / parse / unknown — treat as transient and retry.
+            last_err = exc
+            if attempt >= retry_attempts:
+                break
+            sleep_for = retry_base_sleep * (2 ** (attempt - 1))
+            sys.stderr.write(
+                f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
+                f"{str(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+            )
+            time.sleep(sleep_for)
+    if isinstance(last_err, _AnthropicHttpError):
+        raise last_err
+    raise RuntimeError(str(last_err) if last_err else "unknown direct error")
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +341,6 @@ def _run_mmx_subprocess(
     payload: Dict[str, Any], *, timeout_s: int, retry_attempts: int, retry_base_sleep: float
 ) -> Dict[str, Any]:
     import subprocess
-    import threading
     cmd = [
         "mmx",
         "text",
@@ -333,48 +365,45 @@ def _run_mmx_subprocess(
     messages = payload["messages"]
     body_in = json.dumps(messages, ensure_ascii=False).encode("utf-8")
 
-    semaphore = threading.BoundedSemaphore(1)
-
     last_err = ""
     for attempt in range(1, retry_attempts + 1):
-        with semaphore:
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=body_in,
+                capture_output=True,
+                timeout=timeout_s,
+                check=False,
+                env={**os.environ, "MMX_AGENT_ROLE": "user"},
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"mmx timed out after {timeout_s}s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "mmx CLI not found in PATH; install via `npm install -g mmx-cli`"
+            ) from exc
+
+        stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+
+        if proc.returncode == 0 and stdout:
             try:
-                proc = subprocess.run(
-                    cmd,
-                    input=body_in,
-                    capture_output=True,
-                    timeout=timeout_s,
-                    check=False,
-                    env={**os.environ, "MMX_AGENT_ROLE": "user"},
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(f"mmx timed out after {timeout_s}s") from exc
-            except FileNotFoundError as exc:
-                raise RuntimeError(
-                    "mmx CLI not found in PATH; install via `npm install -g mmx-cli`"
-                ) from exc
+                return json.loads(stdout)
+            except json.JSONDecodeError:
+                pass
 
-            stdout = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
-            stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+        last_err = (
+            f"mmx exited {proc.returncode}: stderr={stderr!r} stdout={stdout!r}"
+        )
+        if not _is_mmx_retryable(stderr, proc.returncode) or attempt >= retry_attempts:
+            break
 
-            if proc.returncode == 0 and stdout:
-                try:
-                    return json.loads(stdout)
-                except json.JSONDecodeError:
-                    pass
-
-            last_err = (
-                f"mmx exited {proc.returncode}: stderr={stderr!r} stdout={stdout!r}"
-            )
-            if not _is_mmx_retryable(stderr, proc.returncode) or attempt >= retry_attempts:
-                break
-
-            sleep_for = retry_base_sleep * (2 ** (attempt - 1))
-            sys.stderr.write(
-                f"[mmox-shim] mmx transient (attempt {attempt}/{retry_attempts}): "
-                f"{last_err[:200]}; sleeping {sleep_for:.1f}s before retry\n"
-            )
-            time.sleep(sleep_for)
+        sleep_for = retry_base_sleep * (2 ** (attempt - 1))
+        sys.stderr.write(
+            f"[mmox-shim] mmx transient (attempt {attempt}/{retry_attempts}): "
+            f"{last_err[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+        )
+        time.sleep(sleep_for)
 
     raise RuntimeError(last_err)
 
