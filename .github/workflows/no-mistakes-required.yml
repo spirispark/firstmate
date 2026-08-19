@@ -21,7 +21,11 @@ concurrency:
 jobs:
   check:
     name: PR must be raised via no-mistakes
-    runs-on: ubuntu-latest
+    # No external tools are required - the body marker check runs out of the
+    # shared ci-runner image. tests/fm-workflow-self-hosted.test.sh enforces
+    # this stays on the captain's self-hosted ARM64 runner like the rest of
+    # the workflow file in this directory.
+    runs-on: [self-hosted, linux, ARM64]
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'

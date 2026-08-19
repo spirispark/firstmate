@@ -287,7 +287,19 @@ SH
 #!/usr/bin/env bash
 exit 0
 SH
-  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar" "$fakebin/sleep"
+  # Pin the installer to a Linux x86_64 host. The installer is Linux-only by
+  # contract (docs/ci-runner.md) and refuses on Darwin or unknown platforms,
+  # so a host-side `uname` from the captain's macOS workstation would short-
+  # circuit the install path the test is exercising.
+  cat > "$fakebin/uname" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -s) printf '%s\n' Linux ;;
+  -m) printf '%s\n' x86_64 ;;
+  *) printf '%s\n%s\n' Linux x86_64 ;;
+esac
+SH
+  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar" "$fakebin/sleep" "$fakebin/uname"
 
   out=$(CURL_COUNT="$tmp/curl-count" PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) \
     || fail "installer did not recover from a transient download failure"$'\n'"$out"
