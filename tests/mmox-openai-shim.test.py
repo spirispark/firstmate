@@ -86,6 +86,33 @@ def _quiet_stderr():
     return mock.patch.object(sys, "stderr", new_callable=io.StringIO)
 
 
+def _serve_shim(test: unittest.TestCase) -> tuple:
+    """Start the real shim on an ephemeral loopback port for the duration of one test."""
+    server = SHIM.ThreadingHTTPServer(("127.0.0.1", 0), SHIM.ShimHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    test.addCleanup(thread.join, 5)
+    test.addCleanup(server.server_close)
+    test.addCleanup(server.shutdown)
+    return server.server_address[0], server.server_address[1]
+
+
+def _post_chat(host: str, port: int) -> tuple:
+    """POST one completion request; return (status, body_text)."""
+    conn = http.client.HTTPConnection(host, port, timeout=10)
+    try:
+        conn.request(
+            "POST",
+            "/v1/chat/completions",
+            body=json.dumps(_payload()).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        response = conn.getresponse()
+        return response.status, response.read().decode("utf-8")
+    finally:
+        conn.close()
+
+
 class RetryabilityTest(unittest.TestCase):
     """Finding #1: _run_direct must consult _is_anthropic_retryable."""
 
@@ -414,7 +441,9 @@ class ApiKeyRedactionTest(_SecretRegistryIsolated):
     """Acceptance: errors and logs must not leak the API key."""
 
     def test_direct_error_and_log_do_not_contain_api_key(self):
-        urlopen = mock.Mock(side_effect=[_upstream_error_echoing_secret()])
+        # 429 is retryable, so the retry log actually runs and can be asserted on.
+        urlopen = mock.Mock(side_effect=[_upstream_error_echoing_secret(429),
+                                         _upstream_error_echoing_secret(429)])
         stderr = io.StringIO()
         with mock.patch.object(sys, "stderr", stderr), \
                 mock.patch.object(SHIM.urllib.request, "urlopen", urlopen), \
@@ -426,11 +455,14 @@ class ApiKeyRedactionTest(_SecretRegistryIsolated):
                 SHIM._run_direct(
                     _payload(),
                     timeout_s=10,
-                    retry_attempts=1,
+                    retry_attempts=2,
                     retry_base_sleep=0.01,
                 )
+        logged = stderr.getvalue()
+        self.assertIn("sleeping", logged, "the retry log must have been emitted")
+        self.assertIn(SHIM._REDACTED, logged)
         self.assertNotIn(SECRET, str(ctx.exception))
-        self.assertNotIn(SECRET, stderr.getvalue())
+        self.assertNotIn(SECRET, logged)
 
     def test_mmx_subprocess_output_is_redacted(self):
         def fake_run(cmd, input=None, capture_output=False, timeout=None,
@@ -478,10 +510,11 @@ class MmxConfigFileRedactionTest(_SecretRegistryIsolated):
 
         def fake_run(cmd, input=None, capture_output=False, timeout=None,
                      check=False, env=None):
+            # EAGAIN is retryable, so the mmx retry log runs and can be asserted on.
             return mock.Mock(
                 returncode=1,
                 stdout=b"",
-                stderr=f"config error: api_key={self.CONFIG_SECRET}".encode("utf-8"),
+                stderr=f"EAGAIN config error: api_key={self.CONFIG_SECRET}".encode("utf-8"),
             )
 
         stderr = io.StringIO()
@@ -495,27 +528,60 @@ class MmxConfigFileRedactionTest(_SecretRegistryIsolated):
                 SHIM._run_mmx_subprocess(
                     _payload(),
                     timeout_s=10,
-                    retry_attempts=1,
+                    retry_attempts=2,
                     retry_base_sleep=0.01,
                 )
+        logged = stderr.getvalue()
+        self.assertIn("sleeping", logged, "the retry log must have been emitted")
+        self.assertIn(SHIM._REDACTED, logged)
         self.assertNotIn(self.CONFIG_SECRET, str(ctx.exception))
-        self.assertNotIn(self.CONFIG_SECRET, stderr.getvalue())
+        self.assertNotIn(self.CONFIG_SECRET, logged)
+
+
+class CorruptConfigResponseTest(_SecretRegistryIsolated):
+    """A corrupt ~/.mmx/config.json must still produce an HTTP error response.
+
+    Config parsing sits under every request on both backends, so a failure that
+    is neither OSError nor JSONDecodeError would escape the handler's
+    `except RuntimeError` and drop the connection instead of answering.
+    """
+
+    def _home_with_config(self, raw: bytes) -> str:
+        home = tempfile.mkdtemp(prefix="mmox-corrupt-")
+        self.addCleanup(shutil.rmtree, home, True)
+        config_dir = os.path.join(home, ".mmx")
+        os.makedirs(config_dir)
+        with open(os.path.join(config_dir, "config.json"), "wb") as f:
+            f.write(raw)
+        return home
+
+    def _post_with_config(self, raw: bytes) -> tuple:
+        home = self._home_with_config(raw)
+        host, port = _serve_shim(self)
+        with _quiet_stderr(), \
+                mock.patch.dict(os.environ,
+                                {"HOME": home, "MMOX_BACKEND": "direct",
+                                 "MMOX_SHIM_RETRY": "1"},
+                                clear=True), \
+                mock.patch.object(SHIM.time, "sleep", mock.Mock()):
+            return _post_chat(host, port)
+
+    def test_non_object_config_yields_error_response(self):
+        status, raw = self._post_with_config(b"[]")
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(raw)["error"]["type"], "server_error")
+
+    def test_invalid_utf8_config_yields_error_response(self):
+        status, raw = self._post_with_config(b'{"api_key": "\xff\xfe"}')
+        self.assertEqual(status, 502)
+        self.assertEqual(json.loads(raw)["error"]["type"], "server_error")
 
 
 class ErrorResponseSafetyTest(_SecretRegistryIsolated):
     """Acceptance: the 502 body carries neither the key nor upstream output."""
 
-    def _serve(self) -> tuple:
-        server = SHIM.ThreadingHTTPServer(("127.0.0.1", 0), SHIM.ShimHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(thread.join, 5)
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return server.server_address[0], server.server_address[1]
-
     def test_bad_gateway_body_is_scrubbed(self):
-        host, port = self._serve()
+        host, port = _serve_shim(self)
         urlopen = mock.Mock(side_effect=[_upstream_error_echoing_secret()])
         with _quiet_stderr(), \
                 mock.patch.dict(os.environ, {"MMOX_BACKEND": "direct",
@@ -525,19 +591,7 @@ class ErrorResponseSafetyTest(_SecretRegistryIsolated):
                 mock.patch.object(SHIM, "_load_api_key", return_value=SECRET), \
                 mock.patch.object(SHIM, "_load_region_and_base_url",
                                   return_value=("global", "https://api.minimax.io")):
-            conn = http.client.HTTPConnection(host, port, timeout=10)
-            try:
-                conn.request(
-                    "POST",
-                    "/v1/chat/completions",
-                    body=json.dumps(_payload()).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                )
-                response = conn.getresponse()
-                status = response.status
-                raw = response.read().decode("utf-8")
-            finally:
-                conn.close()
+            status, raw = _post_chat(host, port)
 
         self.assertEqual(status, 502)
         self.assertNotIn(SECRET, raw)

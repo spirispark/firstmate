@@ -91,17 +91,23 @@ def _mmx_config_candidates() -> List[str]:
     return paths
 
 
+def _read_mmx_config(path: str) -> Optional[Dict[str, Any]]:
+    """Parse one mmx config file; None when absent, unreadable, or not an object."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return cfg if isinstance(cfg, dict) else None
+
+
 def _register_known_secrets() -> None:
     """Register every credential this host exposes: the env override and the
     api_key of each mmx config file, whether or not this process reads it."""
     _remember_secret(os.environ.get("MMOX_API_KEY"))
     for path in _mmx_config_candidates():
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(cfg, dict):
+        cfg = _read_mmx_config(path)
+        if cfg is not None:
             _remember_secret(cfg.get("api_key"))
 
 
@@ -151,17 +157,13 @@ def _load_api_key() -> str:
         return explicit
 
     for path in _mmx_config_candidates():
-        if not os.path.exists(path):
+        cfg = _read_mmx_config(path)
+        if cfg is None:
             continue
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            key = cfg.get("api_key")
-            if isinstance(key, str) and key:
-                _remember_secret(key)
-                return key
-        except (OSError, json.JSONDecodeError):
-            continue
+        key = cfg.get("api_key")
+        if isinstance(key, str) and key:
+            _remember_secret(key)
+            return key
 
     raise RuntimeError(
         "no MiniMax API key found — set MMOX_API_KEY=... or `mmx auth login --api-key ...`"
@@ -172,21 +174,15 @@ def _load_region_and_base_url() -> tuple[str, str]:
     """Read region and base_url; default region=global, base_url=api.minimax.io."""
     region = "global"
     base_url = ANTHROPIC_BASE_URL_GLOBAL
-    cfg_path = os.environ.get("MMX_CONFIG_DIR", "") + "/config.json" if os.environ.get("MMX_CONFIG_DIR") else None
-    candidates = [os.path.expanduser("~/.mmx/config.json"), cfg_path]
-    for path in candidates:
-        if not path or not os.path.exists(path):
+    for path in _mmx_config_candidates():
+        cfg = _read_mmx_config(path)
+        if cfg is None:
             continue
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            if isinstance(cfg.get("region"), str) and cfg["region"] in ("global", "cn"):
-                region = cfg["region"]
-            if isinstance(cfg.get("base_url"), str) and cfg["base_url"].startswith("http"):
-                base_url = cfg["base_url"]
-            break
-        except (OSError, json.JSONDecodeError):
-            continue
+        if isinstance(cfg.get("region"), str) and cfg["region"] in ("global", "cn"):
+            region = cfg["region"]
+        if isinstance(cfg.get("base_url"), str) and cfg["base_url"].startswith("http"):
+            base_url = cfg["base_url"]
+        break
     if region == "cn":
         base_url = ANTHROPIC_BASE_URL_CN
     return region, base_url
