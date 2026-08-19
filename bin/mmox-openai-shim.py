@@ -82,6 +82,29 @@ def _remember_secret(value: Optional[str]) -> None:
         _SECRET_VALUES.add(value)
 
 
+def _mmx_config_candidates() -> List[str]:
+    """Config files mmx reads, in the order _load_api_key prefers them."""
+    paths = [os.path.expanduser("~/.mmx/config.json")]
+    config_dir = os.environ.get("MMX_CONFIG_DIR")
+    if config_dir:
+        paths.append(os.path.join(config_dir, "config.json"))
+    return paths
+
+
+def _register_known_secrets() -> None:
+    """Register every credential this host exposes: the env override and the
+    api_key of each mmx config file, whether or not this process reads it."""
+    _remember_secret(os.environ.get("MMOX_API_KEY"))
+    for path in _mmx_config_candidates():
+        try:
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(cfg, dict):
+            _remember_secret(cfg.get("api_key"))
+
+
 def _redact(text: Any) -> str:
     """Scrub every known credential out of operator- or client-facing text."""
     out = str(text)
@@ -127,12 +150,8 @@ def _load_api_key() -> str:
         _remember_secret(explicit)
         return explicit
 
-    candidates = [
-        os.path.expanduser("~/.mmx/config.json"),
-        os.environ.get("MMX_CONFIG_DIR", "") + "/config.json" if os.environ.get("MMX_CONFIG_DIR") else None,
-    ]
-    for path in candidates:
-        if not path or not os.path.exists(path):
+    for path in _mmx_config_candidates():
+        if not os.path.exists(path):
             continue
         try:
             with open(path, encoding="utf-8") as f:
@@ -257,6 +276,7 @@ def _call_direct_anthropic(
     plain RuntimeError on transport/auth errors (no status), and returns the
     parsed JSON body on success. Caller is responsible for retry policy.
     """
+    _register_known_secrets()
     api_key = _load_api_key()
     _remember_secret(api_key)
     region, base_url = _load_region_and_base_url()
@@ -308,6 +328,18 @@ def _call_direct_anthropic(
     return body
 
 
+def _backoff(
+    attempt: int, retry_attempts: int, retry_base_sleep: float, exc: BaseException
+) -> None:
+    """Log a redacted retry notice, then sleep this attempt's exponential delay."""
+    sleep_for = retry_base_sleep * (2 ** (attempt - 1))
+    sys.stderr.write(
+        f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
+        f"{_redact(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+    )
+    time.sleep(sleep_for)
+
+
 def _run_direct(
     payload: Dict[str, Any], *, timeout_s: int, retry_attempts: int, retry_base_sleep: float
 ) -> Dict[str, Any]:
@@ -331,23 +363,13 @@ def _run_direct(
                 break
             if attempt >= retry_attempts:
                 break
-            sleep_for = retry_base_sleep * (2 ** (attempt - 1))
-            sys.stderr.write(
-                f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
-                f"{_redact(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
-            )
-            time.sleep(sleep_for)
+            _backoff(attempt, retry_attempts, retry_base_sleep, exc)
         except RuntimeError as exc:
             # Transport / parse / unknown — treat as transient and retry.
             last_err = exc
             if attempt >= retry_attempts:
                 break
-            sleep_for = retry_base_sleep * (2 ** (attempt - 1))
-            sys.stderr.write(
-                f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
-                f"{_redact(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
-            )
-            time.sleep(sleep_for)
+            _backoff(attempt, retry_attempts, retry_base_sleep, exc)
     if isinstance(last_err, _AnthropicHttpError):
         raise last_err
     raise RuntimeError(str(last_err) if last_err else "unknown direct error")
@@ -368,6 +390,7 @@ def _run_mmx_subprocess(
     payload: Dict[str, Any], *, timeout_s: int, retry_attempts: int, retry_base_sleep: float
 ) -> Dict[str, Any]:
     import subprocess
+    _register_known_secrets()
     cmd = [
         "mmx",
         "text",

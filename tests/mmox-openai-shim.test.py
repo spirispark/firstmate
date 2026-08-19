@@ -11,7 +11,9 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -393,7 +395,22 @@ def _upstream_error_echoing_secret(status: int = 401) -> _FakeHTTPError:
     )
 
 
-class ApiKeyRedactionTest(unittest.TestCase):
+class _SecretRegistryIsolated(unittest.TestCase):
+    """Base for redaction tests: the module-level secret registry is global, so
+    a leaked entry from an earlier test would mask a missing registration."""
+
+    def setUp(self):
+        saved = set(SHIM._SECRET_VALUES)
+
+        def restore():
+            SHIM._SECRET_VALUES.clear()
+            SHIM._SECRET_VALUES.update(saved)
+
+        self.addCleanup(restore)
+        SHIM._SECRET_VALUES.clear()
+
+
+class ApiKeyRedactionTest(_SecretRegistryIsolated):
     """Acceptance: errors and logs must not leak the API key."""
 
     def test_direct_error_and_log_do_not_contain_api_key(self):
@@ -438,7 +455,54 @@ class ApiKeyRedactionTest(unittest.TestCase):
         self.assertNotIn(SECRET, str(ctx.exception))
 
 
-class ErrorResponseSafetyTest(unittest.TestCase):
+class MmxConfigFileRedactionTest(_SecretRegistryIsolated):
+    """Acceptance: a key only ~/.mmx/config.json holds must not reach the log.
+
+    The mmx backend never calls _load_api_key — mmx reads the config in its own
+    process — so the shim has to register config credentials on its own.
+    """
+
+    CONFIG_SECRET = "sk-config-only-0123456789abcdef"
+
+    def _config_home(self) -> str:
+        home = tempfile.mkdtemp(prefix="mmox-config-")
+        self.addCleanup(shutil.rmtree, home, True)
+        config_dir = os.path.join(home, ".mmx")
+        os.makedirs(config_dir)
+        with open(os.path.join(config_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"api_key": self.CONFIG_SECRET, "region": "global"}, f)
+        return home
+
+    def test_mmx_error_redacts_key_read_from_config_file(self):
+        home = self._config_home()
+
+        def fake_run(cmd, input=None, capture_output=False, timeout=None,
+                     check=False, env=None):
+            return mock.Mock(
+                returncode=1,
+                stdout=b"",
+                stderr=f"config error: api_key={self.CONFIG_SECRET}".encode("utf-8"),
+            )
+
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr), \
+                mock.patch.dict(os.environ, {"HOME": home}, clear=True), \
+                mock.patch("subprocess.run", side_effect=fake_run), \
+                mock.patch.object(SHIM.time, "sleep", mock.Mock()):
+            self.assertIsNone(os.environ.get("MMOX_API_KEY"),
+                              "the config file must be the only secret source")
+            with self.assertRaises(RuntimeError) as ctx:
+                SHIM._run_mmx_subprocess(
+                    _payload(),
+                    timeout_s=10,
+                    retry_attempts=1,
+                    retry_base_sleep=0.01,
+                )
+        self.assertNotIn(self.CONFIG_SECRET, str(ctx.exception))
+        self.assertNotIn(self.CONFIG_SECRET, stderr.getvalue())
+
+
+class ErrorResponseSafetyTest(_SecretRegistryIsolated):
     """Acceptance: the 502 body carries neither the key nor upstream output."""
 
     def _serve(self) -> tuple:
