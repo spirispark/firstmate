@@ -69,10 +69,18 @@ jobs:
           # the wrong version. Documented in docs/ci-runner.md so a
           # future image roll that adds node v22 LTS would let this
           # step short-circuit.
-          command -v npm >/dev/null || {
+          # The check below is intentionally Node-22 specific, not
+          # "any npm on PATH": Ubuntu 24.04 Noble ships Node 18 by
+          # default, and that node passes `command -v npm` while still
+          # failing the .ts parse the rest of this lane requires.
+          # Only short-circuit when the installed node is already on the
+          # pinned LTS line; otherwise install the pinned binary even
+          # if /usr/bin/npm exists.
+          if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
             bin/fm-install-node.sh "$RUNNER_TEMP/bin"
             echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          }
+          fi
+          command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           npm install -g tasks-axi
           tasks-axi --version
@@ -106,11 +114,19 @@ jobs:
           # restores the Node 22 LTS line that ubuntu-latest previously
           # provided by default - required by behavior tests that load
           # .ts sources directly. SHA-256-verified per arch so a
-          # blocked or compromised mirror reds the lane loudly.
-          command -v npm >/dev/null || {
+          # blocked or compromised mirror reds the lane loudly. The
+          # check below is intentionally Node-22 specific, not "any
+          # npm on PATH": Ubuntu 24.04 Noble ships Node 18 by default,
+          # and that node passes `command -v npm` while still failing
+          # the .ts parse the rest of this lane requires. Only
+          # short-circuit when the installed node is already on the
+          # pinned LTS line; otherwise install the pinned binary even
+          # if /usr/bin/npm exists.
+          if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
             bin/fm-install-node.sh "$RUNNER_TEMP/bin"
             echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          }
+          fi
+          command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           npm install -g tasks-axi
           tasks-axi --version
@@ -168,13 +184,24 @@ jobs:
           # installer / apt when one of them is actually missing, or
           # every run re-pays the round trip and a transient archive
           # failure reds a required lane with nothing to install.
-          command -v tmux >/dev/null && command -v npm >/dev/null || {
+          # The tmux check stays on PATH presence (apt installs the
+          # version we need); the node check is intentionally
+          # Node-22 specific, not "any npm on PATH": Ubuntu 24.04
+          # Noble ships Node 18 by default, and that node passes
+          # `command -v npm` while still failing the .ts parse the
+          # rest of this lane requires. Only reach for apt when tmux
+          # is missing, and only call the Node.js installer when the
+          # installed node is below the pinned LTS line.
+          if ! command -v tmux >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y --no-install-recommends tmux
+          fi
+          if ! command -v node >/dev/null 2>&1 || ! node --version | grep -qE '^v22\.'; then
             bin/fm-install-node.sh "$RUNNER_TEMP/bin"
             echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          }
+          fi
           command -v tmux >/dev/null || { echo "::error::tmux is required for real afk injection e2e coverage"; exit 1; }
+          command -v node >/dev/null || { echo "::error::node is required for tasks-axi"; exit 1; }
           command -v npm >/dev/null || { echo "::error::npm is required for tasks-axi"; exit 1; }
           tmux -V
       - name: Install tasks-axi for backlog-handoff delegation
