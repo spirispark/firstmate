@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Behavior tests for bin/mmox-shim (the bash launcher).
+# Behavior tests for bin/mmox-shim.sh (the bash launcher).
 #
 # Addresses Amazon Q findings on PR #6:
 # 4. Unquoted PID variable (defensive: PID file content must be validated as
@@ -15,7 +15,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-mmox-shim)
-SHIM="$ROOT/bin/mmox-shim"
+SHIM="$ROOT/bin/mmox-shim.sh"
 
 # Common fixture: a fake HOME plus a fakebin with curl/healthcheck stubs.
 fake_home="$TMP_ROOT/home"

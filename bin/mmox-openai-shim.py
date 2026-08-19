@@ -72,10 +72,32 @@ def _completion_id() -> str:
     return f"mmox-{secrets.token_hex(12)}"
 
 
+_REDACTED = "***redacted***"
+_SECRET_VALUES: set = set()
+
+
+def _remember_secret(value: Optional[str]) -> None:
+    """Register a credential so _redact can scrub it from logs and responses."""
+    if isinstance(value, str) and len(value) >= 8:
+        _SECRET_VALUES.add(value)
+
+
+def _redact(text: Any) -> str:
+    """Scrub every known credential out of operator- or client-facing text."""
+    out = str(text)
+    known = set(_SECRET_VALUES)
+    env_key = os.environ.get("MMOX_API_KEY")
+    if isinstance(env_key, str) and len(env_key) >= 8:
+        known.add(env_key)
+    for value in known:
+        out = out.replace(value, _REDACTED)
+    return out
+
+
 def _err(message: str, *, etype: str = "invalid_request_error", code: int = 400) -> dict:
     return {
         "error": {
-            "message": message,
+            "message": _redact(message),
             "type": etype,
             "param": None,
             "code": etype,
@@ -102,6 +124,7 @@ def _load_api_key() -> str:
     """Pull the MiniMax API key from the standard places mmx would read."""
     explicit = os.environ.get("MMOX_API_KEY")
     if explicit:
+        _remember_secret(explicit)
         return explicit
 
     candidates = [
@@ -116,6 +139,7 @@ def _load_api_key() -> str:
                 cfg = json.load(f)
             key = cfg.get("api_key")
             if isinstance(key, str) and key:
+                _remember_secret(key)
                 return key
         except (OSError, json.JSONDecodeError):
             continue
@@ -216,7 +240,9 @@ class _AnthropicHttpError(RuntimeError):
     the retry layer can classify without parsing the message string."""
 
     def __init__(self, *, status: int, body: Dict[str, Any]):
-        message = f"anthropic returned {status}: {json.dumps(body, ensure_ascii=False)[:400]}"
+        message = _redact(
+            f"anthropic returned {status}: {json.dumps(body, ensure_ascii=False)[:400]}"
+        )
         super().__init__(message)
         self.status = status
         self.body = body
@@ -232,6 +258,7 @@ def _call_direct_anthropic(
     parsed JSON body on success. Caller is responsible for retry policy.
     """
     api_key = _load_api_key()
+    _remember_secret(api_key)
     region, base_url = _load_region_and_base_url()
 
     system_text, contents = _openai_to_anthropic_messages(payload["messages"])
@@ -266,13 +293,13 @@ def _call_direct_anthropic(
         status = exc.code
         raw = exc.read() if hasattr(exc, "read") else b""
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"transport error: {exc}") from exc
+        raise RuntimeError(_redact(f"transport error: {exc}")) from exc
 
     try:
         body = json.loads(raw.decode("utf-8")) if raw else {}
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"non-JSON response (status={status}, len={len(raw)}): {raw[:200]!r}"
+            _redact(f"non-JSON response (status={status}, len={len(raw)}): {raw[:200]!r}")
         ) from exc
 
     if status >= 400:
@@ -307,7 +334,7 @@ def _run_direct(
             sleep_for = retry_base_sleep * (2 ** (attempt - 1))
             sys.stderr.write(
                 f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
-                f"{str(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+                f"{_redact(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
             )
             time.sleep(sleep_for)
         except RuntimeError as exc:
@@ -318,7 +345,7 @@ def _run_direct(
             sleep_for = retry_base_sleep * (2 ** (attempt - 1))
             sys.stderr.write(
                 f"[mmox-shim] direct attempt {attempt}/{retry_attempts} failed: "
-                f"{str(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
+                f"{_redact(exc)[:200]}; sleeping {sleep_for:.1f}s before retry\n"
             )
             time.sleep(sleep_for)
     if isinstance(last_err, _AnthropicHttpError):
@@ -392,7 +419,7 @@ def _run_mmx_subprocess(
             except json.JSONDecodeError:
                 pass
 
-        last_err = (
+        last_err = _redact(
             f"mmx exited {proc.returncode}: stderr={stderr!r} stdout={stdout!r}"
         )
         if not _is_mmx_retryable(stderr, proc.returncode) or attempt >= retry_attempts:
@@ -435,7 +462,7 @@ class ShimHandler(BaseHTTPRequestHandler):
     server_version = "mmox-openai-shim/2.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib name
-        sys.stderr.write(f"[mmox-shim] {self.address_string()} - {format % args}\n")
+        sys.stderr.write(f"[mmox-shim] {self.address_string()} - {_redact(format % args)}\n")
 
     def address_string(self) -> str:  # type: ignore[override]
         return f"{self.client_address[0]}:{self.client_address[1]}"
@@ -544,11 +571,17 @@ class ShimHandler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             elapsed = time.monotonic() - started
             sys.stderr.write(
-                f"[mmox-shim] backend={backend} failed after {elapsed:.1f}s: {exc}\n"
+                f"[mmox-shim] backend={backend} failed after {elapsed:.1f}s: "
+                f"{_redact(exc)}\n"
             )
+            upstream_status = getattr(exc, "status", None)
+            summary = f"upstream failed (backend={backend}"
+            if isinstance(upstream_status, int):
+                summary += f", upstream_status={upstream_status}"
+            summary += "); see the shim log for details"
             _write_json(
                 self,
-                _err(f"upstream failed: {exc}", etype="server_error", code=502),
+                _err(summary, etype="server_error", code=502),
                 status=HTTPStatus.BAD_GATEWAY,
             )
             return

@@ -6,10 +6,13 @@ Addresses Amazon Q findings on PR #6:
 2. Upstream exception carries status+body for retry classification.
 3. No serial-retry semaphore in the mmx subprocess path.
 """
+import http.client
 import importlib.util
 import io
 import json
+import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -282,25 +285,43 @@ class ExceptionCarriesStatusTest(unittest.TestCase):
 
 
 class NoSerialRetrySemaphoreTest(unittest.TestCase):
-    """Finding #3: _run_mmx_subprocess must not use a serial-retry semaphore."""
+    """Finding #3: _run_mmx_subprocess must not gate calls behind a semaphore."""
 
-    def test_no_bounded_semaphore_in_mmx_path(self):
-        # The semaphore was created inside _run_mmx_subprocess.
-        # After the fix, the function must not import threading.BoundedSemaphore
-        # nor instantiate one. We assert by source-string scan to keep this
-        # test honest: if someone re-adds the semaphore, this test fails.
-        source = SHIM_PATH.read_text(encoding="utf-8")
-        # Locate the mmx subprocess function block.
-        start = source.find("def _run_mmx_subprocess")
-        self.assertGreater(start, 0, "could not locate _run_mmx_subprocess")
-        end = source.find("\ndef ", start + 1)
-        block = source[start:end]
-        self.assertNotIn("BoundedSemaphore", block,
-                         "_run_mmx_subprocess must not use BoundedSemaphore "
-                         "(serial retry loops have no concurrency to gate)")
-        self.assertNotIn("threading.", block,
-                         "_run_mmx_subprocess must not import threading "
-                         "when only used for an unnecessary semaphore")
+    def test_concurrent_mmx_calls_are_not_serialized(self):
+        # Requests arrive on ThreadingHTTPServer, so two clients reach
+        # _run_mmx_subprocess at once. Any semaphore gating the retry loop lets
+        # only one through, so the second thread never reaches the barrier and
+        # both raise BrokenBarrierError instead of completing.
+        barrier = threading.Barrier(2, timeout=5)
+        failures = []
+
+        def fake_run(cmd, input=None, capture_output=False, timeout=None,
+                     check=False, env=None):
+            barrier.wait()
+            return mock.Mock(returncode=0,
+                             stdout=b'{"content": "ok"}',
+                             stderr=b"")
+
+        def call():
+            try:
+                SHIM._run_mmx_subprocess(
+                    _payload(),
+                    timeout_s=10,
+                    retry_attempts=1,
+                    retry_base_sleep=0.01,
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced by assert
+                failures.append(exc)
+
+        with _quiet_stderr(), mock.patch("subprocess.run", side_effect=fake_run):
+            threads = [threading.Thread(target=call) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+        self.assertEqual(failures, [],
+                         "concurrent mmx calls must overlap, not serialize")
 
     def test_mmx_retry_still_works_without_semaphore(self):
         # Behavioral guarantee: retry semantics are unchanged after removal.
@@ -353,15 +374,35 @@ class UpstreamRetryClassificationHelpersTest(unittest.TestCase):
             )
 
 
+SECRET = "sk-secret-abcdef1234567890"
+UPSTREAM_MARKER = "internal-upstream-trace-9f3c"
+
+
+def _upstream_error_echoing_secret(status: int = 401) -> _FakeHTTPError:
+    """Upstream auth/config errors routinely echo the offending credential."""
+    return _FakeHTTPError(
+        status=status,
+        body=json.dumps(
+            {
+                "error": {
+                    "type": "authentication_error",
+                    "message": f"invalid x-api-key {SECRET} {UPSTREAM_MARKER}",
+                }
+            }
+        ).encode("utf-8"),
+    )
+
+
 class ApiKeyRedactionTest(unittest.TestCase):
     """Acceptance: errors and logs must not leak the API key."""
 
-    def test_error_message_does_not_contain_api_key(self):
-        urlopen = mock.Mock(side_effect=[_upstream_error(400)])
-        with _quiet_stderr(), \
+    def test_direct_error_and_log_do_not_contain_api_key(self):
+        urlopen = mock.Mock(side_effect=[_upstream_error_echoing_secret()])
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "stderr", stderr), \
                 mock.patch.object(SHIM.urllib.request, "urlopen", urlopen), \
                 mock.patch.object(SHIM.time, "sleep", mock.Mock()), \
-                mock.patch.object(SHIM, "_load_api_key", return_value="sk-secret-abcdef1234567890"), \
+                mock.patch.object(SHIM, "_load_api_key", return_value=SECRET), \
                 mock.patch.object(SHIM, "_load_region_and_base_url",
                                   return_value=("global", "https://api.minimax.io")):
             with self.assertRaises(RuntimeError) as ctx:
@@ -371,7 +412,73 @@ class ApiKeyRedactionTest(unittest.TestCase):
                     retry_attempts=1,
                     retry_base_sleep=0.01,
                 )
-        self.assertNotIn("sk-secret-abcdef1234567890", str(ctx.exception))
+        self.assertNotIn(SECRET, str(ctx.exception))
+        self.assertNotIn(SECRET, stderr.getvalue())
+
+    def test_mmx_subprocess_output_is_redacted(self):
+        def fake_run(cmd, input=None, capture_output=False, timeout=None,
+                     check=False, env=None):
+            return mock.Mock(
+                returncode=1,
+                stdout=b"",
+                stderr=f"config error: api_key={SECRET}".encode("utf-8"),
+            )
+
+        with _quiet_stderr(), \
+                mock.patch.dict(os.environ, {"MMOX_API_KEY": SECRET}), \
+                mock.patch("subprocess.run", side_effect=fake_run), \
+                mock.patch.object(SHIM.time, "sleep", mock.Mock()):
+            with self.assertRaises(RuntimeError) as ctx:
+                SHIM._run_mmx_subprocess(
+                    _payload(),
+                    timeout_s=10,
+                    retry_attempts=1,
+                    retry_base_sleep=0.01,
+                )
+        self.assertNotIn(SECRET, str(ctx.exception))
+
+
+class ErrorResponseSafetyTest(unittest.TestCase):
+    """Acceptance: the 502 body carries neither the key nor upstream output."""
+
+    def _serve(self) -> tuple:
+        server = SHIM.ThreadingHTTPServer(("127.0.0.1", 0), SHIM.ShimHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server.server_address[0], server.server_address[1]
+
+    def test_bad_gateway_body_is_scrubbed(self):
+        host, port = self._serve()
+        urlopen = mock.Mock(side_effect=[_upstream_error_echoing_secret()])
+        with _quiet_stderr(), \
+                mock.patch.dict(os.environ, {"MMOX_BACKEND": "direct",
+                                             "MMOX_SHIM_RETRY": "1"}), \
+                mock.patch.object(SHIM.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(SHIM.time, "sleep", mock.Mock()), \
+                mock.patch.object(SHIM, "_load_api_key", return_value=SECRET), \
+                mock.patch.object(SHIM, "_load_region_and_base_url",
+                                  return_value=("global", "https://api.minimax.io")):
+            conn = http.client.HTTPConnection(host, port, timeout=10)
+            try:
+                conn.request(
+                    "POST",
+                    "/v1/chat/completions",
+                    body=json.dumps(_payload()).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                status = response.status
+                raw = response.read().decode("utf-8")
+            finally:
+                conn.close()
+
+        self.assertEqual(status, 502)
+        self.assertNotIn(SECRET, raw)
+        self.assertNotIn(UPSTREAM_MARKER, raw)
+        self.assertEqual(json.loads(raw)["error"]["type"], "server_error")
 
 
 if __name__ == "__main__":

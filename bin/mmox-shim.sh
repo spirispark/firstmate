@@ -2,14 +2,14 @@
 # Start, stop, or shell-out graphify runs through the local mmx OpenAI-compat shim.
 #
 # Usage:
-#   bin/mmox-shim start                  # launch the shim in the background, write PID/log
-#   bin/mmox-shim stop                   # kill the running shim
-#   bin/mmox-shim status                 # print running state
-#   bin/mmox-shim run <graphify args...> # start (if needed), set env, run graphify
+#   bin/mmox-shim.sh start                  # launch the shim in the background, write PID/log
+#   bin/mmox-shim.sh stop                   # kill the running shim
+#   bin/mmox-shim.sh status                 # print running state
+#   bin/mmox-shim.sh run <graphify args...> # start (if needed), set env, run graphify
 #
 # The shim itself is bin/mmox-openai-shim.py. After `start`, set in your shell:
-#   eval "$(bin/mmox-shim env)"          # exports OPENAI_BASE_URL=... OPENAI_API_KEY=... OPENAI_MODEL=...
-# or just use `bin/mmox-shim run ...` to dispatch graphify calls with the env pre-configured.
+#   eval "$(bin/mmox-shim.sh env)"          # exports OPENAI_BASE_URL=... OPENAI_API_KEY=... OPENAI_MODEL=...
+# or just use `bin/mmox-shim.sh run ...` to dispatch graphify calls with the env pre-configured.
 set -euo pipefail
 
 ROOT="${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -126,7 +126,7 @@ case "$cmd" in
         ;;
     *)
         echo "unknown command: $cmd" >&2
-        echo "run bin/mmox-shim (no args) for usage" >&2
+        echo "run bin/mmox-shim.sh (no args) for usage" >&2
         exit 2
         ;;
 esac
