@@ -297,6 +297,19 @@ export default function (pi: ExtensionAPI) {
     armChild.kill("SIGTERM");
     const closed = armClose.get(armChild);
     if (!closed) return false;
+    // Drain the stdio streams before the next startArm. Without this, SIGTERM
+    // can land before bash's block-buffered printf reaches the kernel, so the
+    // arm's log line is lost when the next spawn truncates the file.
+    await new Promise<void>((resolveDrain) => {
+      let drained = 0;
+      const onDrain = (): void => {
+        drained += 1;
+        if (drained >= 2) resolveDrain();
+      };
+      armChild.stdout?.once("close", onDrain);
+      armChild.stderr?.once("close", onDrain);
+      setTimeout(resolveDrain, armRetireTimeoutMs);
+    });
     return new Promise((resolveRetired) => {
       const timer = setTimeout(() => resolveRetired(false), armRetireTimeoutMs);
       timer.unref();
@@ -400,6 +413,12 @@ export default function (pi: ExtensionAPI) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     owner.child = armChild;
+    // Yield one microtask after spawn so the stdio streams flush their initial
+    // buffer before the parent's event loop reaches any data on them. resume()
+    // switches the stream into flowing mode and drains any buffered bytes
+    // without destroying the listener the rest of the code attaches below.
+    setImmediate(() => armChild.stdout?.resume());
+    setImmediate(() => armChild.stderr?.resume());
     let stdout = "";
     let stderr = "";
     let settled = false;
