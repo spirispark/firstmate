@@ -105,8 +105,8 @@ jobs:
 
   # Required portable serial remainder: watcher, lock, AFK, tmux, daemon,
   # ambiguous, and other stateful tests. Real Herdr stays in tests-herdr.
-  # Split across separate runners so no two of these stateful scripts ever share
-  # a machine: each shard is still strictly serial in itself. Shard membership
+  # Split into shard jobs that never run concurrently in one runner environment:
+  # each shard is still strictly serial in itself. Shard membership
   # and the shard count both belong to bin/fm-test-run.sh, which refuses a lane
   # whose "ofN" disagrees with it (docs/fm-test-portable-shards.md).
   tests-portable-serial:
@@ -164,8 +164,9 @@ jobs:
           if-no-files-found: warn
 
   # Required real-Herdr lane: pinned install, serial real-herdr-gated family,
-  # hard-fail on "skip: herdr not found". Starts on Linux x86_64; if a genuine
-  # platform invariant fails (focus, cleanup, default-session tripwire), keep
+  # hard-fail on "skip: herdr not found". Runs on the self-hosted Linux ARM64
+  # runner; the pinned installers resolve the matching aarch64 assets. If a
+  # genuine platform invariant fails (focus, cleanup, default-session tripwire), keep
   # the failure evidence and move the job to macOS rather than skip assertions.
   tests-herdr:
     name: Behavior tests (Herdr)
@@ -320,6 +321,9 @@ jobs:
           path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
           if-no-files-found: warn
 
+  # Stays on a GitHub-hosted macOS runner while every other lane is self-hosted:
+  # the guarantee below is stock macOS Bash 3.2.57 behavior, which no Linux
+  # runner can reproduce.
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
     runs-on: macos-latest

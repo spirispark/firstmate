@@ -63,9 +63,10 @@
 # duration-balanced partition of that exact set (see docs/fm-test-portable-shards.md).
 #
 # portable-serial stays strictly serial. Its CI shards (portable-serial-<k>of<n>)
-# split it across separate runners, so two of its stateful scripts still never
-# share a machine. This script owns <n>: a lane whose <n> disagrees with the
-# configured shard count is refused, so a CI matrix cannot silently drop a shard.
+# split it across separate jobs that never run concurrently in one runner
+# environment (docs/fm-test-portable-shards.md owns that rationale). This script
+# owns <n>: a lane whose <n> disagrees with the configured shard count is
+# refused, so a CI matrix cannot silently drop a shard.
 # --changed is conservative: it over-selects related families rather than
 # under-selecting, and never expands to the complete suite unless --all.
 set -eu
