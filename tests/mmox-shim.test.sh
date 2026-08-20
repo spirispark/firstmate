@@ -23,6 +23,36 @@ fake_state="$TMP_ROOT/state"
 fakebin="$TMP_ROOT/fakebin"
 mkdir -p "$fake_home" "$fake_state" "$fakebin"
 
+# bin/mmox-shim.sh falls back to "$HOME/.cache/mmox-shim" whenever
+# MMOX_STATE_DIR is unset or empty, so that - not any path this file invents -
+# is where `start` writes its PID and log files in the empty-state case.
+home_state="$fake_home/.cache/mmox-shim"
+
+# Kill the shim recorded in <pid_file> (if any) and drop its state files.
+reap_shim() {
+  local pid_file=$1 pid_content
+  [ -f "$pid_file" ] || return 0
+  pid_content=$(cat "$pid_file" 2>/dev/null) || pid_content=
+  case "$pid_content" in
+    '' | *[!0-9]*) ;;
+    *) kill "$pid_content" 2>/dev/null || true ;;
+  esac
+  rm -f "$pid_file"
+}
+
+# Teardown must cover every state dir `start` can resolve to, and must run on
+# the `fail` path too (fail exits immediately), or a backgrounded shim
+# outlives the suite. lib.sh arms its own EXIT/INT/TERM traps, so this file
+# replaces them and calls fm_test_cleanup itself.
+reap_all_shims() {
+  reap_shim "$fake_state/shim.pid"
+  reap_shim "$home_state/shim.pid"
+}
+
+trap 'reap_all_shims; fm_test_cleanup || true' EXIT
+trap 'reap_all_shims; fm_test_cleanup || true; exit 130' INT
+trap 'reap_all_shims; fm_test_cleanup || true; exit 143' TERM
+
 # Stub `mmox-openai-shim.py` as a no-op so `start` exits quickly and writes
 # its PID file before our assertions run.
 cat > "$fakebin/mmox-openai-shim.py" <<'PY'
@@ -63,55 +93,55 @@ run_shim() {
 # ---------------------------------------------------------------------------
 
 test_empty_state_dir_does_not_collapse_log_path() {
-  local state_root="$TMP_ROOT/empty-state"
-  mkdir -p "$state_root"
-
   # Override HOME and MMOX_STATE_DIR="" together — worst-case combo.
   local out
   out=$(env -i \
     HOME="$fake_home" \
     PATH="$fakebin:$PYBIN:/usr/bin:/bin" \
     MMOX_STATE_DIR="" \
-    FM_ROOT_OVERRIDE="$ROOT/bin" \
+    FM_ROOT_OVERRIDE="$fakebin" \
     "$SHIM" status 2>&1) || true
+  case "$out" in
+    stopped | running*) ;;
+    *) fail "empty MMOX_STATE_DIR: status output unexpected: $out" ;;
+  esac
 
   # The launcher must not have written to /shim.log (or attempted to).
-  # We assert by inspecting the resolved LOG_FILE through env output instead,
-  # because status() does not print it. The `env` subcommand prints the env
-  # it would export — but LOG_FILE is launcher-internal. So we drive `start`
-  # in a child PID that we immediately stop, then check the file layout.
-  local pid_file="$state_root/shim.pid"
-  local log_file="$state_root/shim.log"
+  # status() does not print the resolved LOG_FILE, so we drive `start` and
+  # assert on the file layout it leaves behind. FM_ROOT_OVERRIDE points at
+  # fakebin so `start` spawns the inert stub above rather than the real shim
+  # (which would bind a well-known port for the duration of the suite).
+  local pid_file="$home_state/shim.pid"
+  local log_file="$home_state/shim.log"
+  rm -f "$pid_file" "$log_file"
 
-  # Pre-create empty state dir; launcher must reuse it (not write to /shim.log).
   env -i \
     HOME="$fake_home" \
     PATH="$fakebin:$PYBIN:/usr/bin:/bin" \
     MMOX_STATE_DIR="" \
-    FM_ROOT_OVERRIDE="$ROOT/bin" \
+    FM_ROOT_OVERRIDE="$fakebin" \
     "$SHIM" start >/dev/null 2>&1 || true
 
-  # Either start succeeded (and PID+log live in state_root) or it failed cleanly.
   # In NEITHER case must a file have been created at /shim.log.
   if [ -e /shim.log ]; then
     fail "launcher wrote /shim.log when MMOX_STATE_DIR was empty (root write)"
   fi
 
-  # When start succeeded, both PID and log files must be under state_root.
-  if [ -f "$pid_file" ]; then
-    assert_present "$log_file" \
-      "log file must live under MMOX_STATE_DIR when MMOX_STATE_DIR is empty"
-    # The PID file content must be a non-empty positive integer.
-    local pid_content
-    pid_content=$(cat "$pid_file")
-    case "$pid_content" in
-      ''|*[!0-9]*) fail "PID file must contain only digits, got: [$pid_content]" ;;
-      0) fail "PID file must not be zero, got: [$pid_content]" ;;
-    esac
-    # Stop the background shim so the test exits cleanly.
-    kill "$pid_content" 2>/dev/null || true
-    rm -f "$pid_file" "$log_file"
-  fi
+  # Both PID and log files must live under the HOME-derived state dir.
+  assert_present "$pid_file" \
+    "PID file must live under the HOME-derived state dir when MMOX_STATE_DIR is empty"
+  assert_present "$log_file" \
+    "log file must live under the HOME-derived state dir when MMOX_STATE_DIR is empty"
+  # The PID file content must be a non-empty positive integer.
+  local pid_content
+  pid_content=$(cat "$pid_file")
+  case "$pid_content" in
+    '' | *[!0-9]*) fail "PID file must contain only digits, got: [$pid_content]" ;;
+    0) fail "PID file must not be zero, got: [$pid_content]" ;;
+  esac
+  # Stop the background shim so the test exits cleanly.
+  reap_shim "$pid_file"
+  rm -f "$log_file"
 
   pass "empty MMOX_STATE_DIR does not collapse LOG_FILE to /shim.log"
 }
@@ -257,12 +287,5 @@ test_status_when_stopped
 test_status_does_not_leak_api_key
 test_env_does_not_leak_api_key
 
-# Cleanup any leftover background shims from the start test above.
-if [ -f "$fake_state/shim.pid" ]; then
-  pid_content=$(cat "$fake_state/shim.pid")
-  case "$pid_content" in
-    ''|*[!0-9]*) ;;
-    *) kill "$pid_content" 2>/dev/null || true ;;
-  esac
-  rm -f "$fake_state/shim.pid"
-fi
+# Leftover background shims are reaped by the EXIT trap armed above, which
+# also covers the `fail` path (fail exits before reaching file scope).
