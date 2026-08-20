@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Behavioral tests for bin/mmox-openai-shim.py.
 
-Addresses Amazon Q findings on PR #6:
-1. Retry honors retryability (no retries on 400/401/403).
-2. Upstream exception carries status+body for retry classification.
-3. No serial-retry semaphore in the mmx subprocess path.
+Covered invariants:
+- Retry honors retryability: no retry on 400, 401, or 403.
+- An upstream exception carries status and body so retry classification can read them.
+- The mmx subprocess path holds no serial-retry semaphore.
 """
 import http.client
 import importlib.util

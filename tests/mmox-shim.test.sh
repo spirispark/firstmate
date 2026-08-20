@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/mmox-shim.sh (the bash launcher).
 #
-# Addresses Amazon Q findings on PR #6:
-# 4. Unquoted PID variable (defensive: PID file content must be validated as
-#    an integer, and corrupted PIDs must not propagate to kill).
-# 5. Empty MMOX_STATE_DIR must not collapse LOG_FILE to /shim.log (a root write).
+# Covered invariants:
+# - PID file content is validated as a positive integer, so corrupted content
+#   never reaches kill as a multi-argument list.
+# - An empty MMOX_STATE_DIR falls back instead of collapsing LOG_FILE to
+#   /shim.log, which would be a root write.
 #
 # Strategy: invoke the launcher in a hermetic temp root with HOME and PATH
 # shimmed, then assert on the resulting state directory layout and the

@@ -120,5 +120,5 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-public-followup-lib.sh` | Shared relay-activation gate, O(1) presence checks, and private transport paths for promised public replies |
 | `fm-public-followup.sh`  | Reconcile typed terminal work results into a public commitment and deliver its final reply once |
 | `fm-public-followup-emit.sh` | Report one typed terminal work result into the home that owes the public reply    |
-| `mmox-openai-shim.py`  | Local OpenAI-compat HTTP shim that bridges graphify to the MiniMax Token Plan via `direct` or `mmx` subprocess backends; loopback-only, header owns flags, retry classification, and credential redaction |
-| `mmox-shim.sh`         | Start, stop, or shell-out graphify runs through the local mmx OpenAI-compat shim; header owns the launcher contract, PID validation, and defensive `STATE_DIR` fallback |
+| `mmox-openai-shim.py`    | Bridge graphify to the MiniMax Token Plan through a loopback-only OpenAI-compat HTTP endpoint, over a direct HTTP or an `mmx` subprocess backend |
+| `mmox-shim.sh`           | Start, stop, inspect, or env-wrap graphify runs against the local `mmox-openai-shim.py` endpoint |
