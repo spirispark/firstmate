@@ -40,6 +40,13 @@ jobs:
   tests-portable-parallel-1:
     name: Behavior portable parallel 1
     runs-on: [self-hosted, linux, ARM64]
+    # ubuntu-latest exported C.UTF-8; the self-hosted image leaves the bare
+    # POSIX locale, where bash slices ${var:0:1} per byte instead of per
+    # character and the suite's U+2063 injection sentinel stops matching. Lane
+    # membership is derived, so any test can land here: pin the locale the
+    # suite was written against rather than auditing scripts one at a time.
+    env:
+      LANG: C.UTF-8
     # Measured shard wall is ~1 min of serial sum on proven scripts; this cap is
     # a hang tripwire with margin, not the expected healthy end of the lane.
     timeout-minutes: 10
@@ -52,6 +59,15 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # The self-hosted image ships neither node nor npm, and its tool set
+      # belongs to the image build, not to this workflow (no root, no package
+      # manager, no container escape hatch). setup-node lays a complete Node
+      # toolchain into the runner tool cache unprivileged: npm for the step
+      # below, and node itself for the .mjs command policies the lane exercises.
+      - name: Provision Node for tasks-axi and the .mjs command policies
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install tasks-axi
         run: |
           set -eu
@@ -74,6 +90,9 @@ jobs:
   tests-portable-parallel-2:
     name: Behavior portable parallel 2
     runs-on: [self-hosted, linux, ARM64]
+    # Same self-hosted locale pin as shard 1 above.
+    env:
+      LANG: C.UTF-8
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -84,6 +103,11 @@ jobs:
           set -eu
           bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Same missing-Node reason as shard 1 above.
+      - name: Provision Node for tasks-axi and the .mjs command policies
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install tasks-axi
         run: |
           set -eu
@@ -111,7 +135,15 @@ jobs:
   # whose "ofN" disagrees with it (docs/fm-test-portable-shards.md).
   tests-portable-serial:
     name: Behavior portable serial ${{ matrix.shard }}
-    runs-on: [self-hosted, linux, ARM64]
+    # The one test lane that stays GitHub-hosted on Linux: it hard-requires tmux
+    # for the real afk-injection e2e coverage, and the self-hosted image ships no
+    # tmux and no way for a workflow to add one (the image build owns the tool
+    # set; the runner user has no root, no package manager, and no container
+    # escape hatch). Deleting the tmux gate instead would leave required
+    # coverage silently unrun, which is exactly what that gate exists to stop.
+    # Option B for closing this: add tmux to the fleet runner image, then flip
+    # this back to [self-hosted, linux, ARM64].
+    runs-on: ubuntu-latest
     # Measured whole remainder is ~19 min of serial work; the balanced shards
     # are ~4.8 min each. Cap is a hang tripwire with roughly 3x margin, not the
     # expected healthy end of the lane.
@@ -171,6 +203,11 @@ jobs:
   tests-herdr:
     name: Behavior tests (Herdr)
     runs-on: [self-hosted, linux, ARM64]
+    # Same self-hosted locale pin as the portable parallel shards above. Without
+    # it fm-afk-inject-herdr-e2e Scenario A reads the U+2063 digest sentinel as a
+    # bare 0xe2 byte and classifies an injection as human input.
+    env:
+      LANG: C.UTF-8
     # Real Herdr is slower than the portable suite; this is a hang tripwire,
     # not the expected healthy end of the lane (estimate 15-40 min first cut).
     timeout-minutes: 75
@@ -321,9 +358,10 @@ jobs:
           path: ${{ runner.temp }}/fm-test/fm-test-timing-aggregate.json
           if-no-files-found: warn
 
-  # Stays on a GitHub-hosted macOS runner while every other lane is self-hosted:
-  # the guarantee below is stock macOS Bash 3.2.57 behavior, which no Linux
-  # runner can reproduce.
+  # Stays on a GitHub-hosted macOS runner: the guarantee below is stock macOS
+  # Bash 3.2.57 behavior, which no Linux runner can reproduce. Left without a
+  # LANG pin on purpose - macOS libc has no C.UTF-8, and this lane already runs
+  # under the hosted runner's own UTF-8 default.
   macos-stock-bash:
     name: Stock macOS Bash snapshot compatibility
     runs-on: macos-latest
