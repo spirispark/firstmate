@@ -35,11 +35,12 @@ mkdir -p "$STATE_DIR"
 
 # Validate that a candidate PID string is a positive integer. Returns 0 only
 # for plain non-empty numeric content (no whitespace, no leading -, no sign).
-# Corrupted PID files (empty, whitespace, multi-line, non-numeric) are
-# rejected so a kill call never sees garbage as a multi-arg PID list.
+# Corrupted PID files (empty, whitespace, multi-line, non-numeric, or zero) are
+# rejected so a kill call never sees garbage as a multi-arg PID list, and never
+# reaches `kill 0`, which would target the entire process group.
 _pid_is_valid() {
     case "${1:-}" in
-        ''|*[!0-9]*) return 1 ;;
+        ''|*[!0-9]*|0) return 1 ;;
         *) return 0 ;;
     esac
 }

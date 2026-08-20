@@ -186,6 +186,43 @@ test_empty_pid_file_is_handled_safely() {
   esac
 }
 
+test_pid_is_valid_rejects_zero_and_garbage() {
+  # Source the helper directly so we exercise the real boundary.
+  local shim="$ROOT/bin/mmox-shim.sh"
+  local helper
+  helper=$(sed -n '/^_pid_is_valid() {/,/^}$/p' "$shim")
+  local eval_helper='
+  '"$helper"'
+  '
+  local cases="  abc|1
+123|0
+0|1
+1.5|1
+123abc|1
+ 99999|0
+  42|0
+0abc|1
+00|1
+001|0
+  "
+  local fail_lines=0
+  while IFS='|' read -r input expected; do
+    [ -z "$input" ] && continue
+    local actual
+    actual=$(eval "$eval_helper" && sh -c '. /dev/stdin; _pid_is_valid "$1"' _ "$input")
+    if [ "$actual" != "$expected" ]; then
+      echo "  PID [$input] expected $expected got $actual"
+      fail_lines=$((fail_lines + 1))
+    fi
+  done <<EOF
+$cases
+EOF
+  if [ "$fail_lines" -gt 0 ]; then
+    fail "$fail_lines _pid_is_valid case(s) wrong"
+  fi
+  pass "_pid_is_valid accepts only positive integers"
+}
+
 # ---------------------------------------------------------------------------
 # Lifecycle sanity: stop when stopped, status when stopped.
 # ---------------------------------------------------------------------------
