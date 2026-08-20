@@ -32,7 +32,7 @@ FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 cat > "$FAKEBIN/quota-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf 'quota-axi %s\n' "${FM_FAKE_QUOTA_VERSION:-0.1.17}"
+  printf 'quota-axi %s\n' "${FM_FAKE_QUOTA_VERSION:-0.1.25}"
   exit 0
 fi
 if [ "${1:-}" = --json ]; then

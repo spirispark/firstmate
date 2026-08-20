@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Start, stop, or shell-out graphify runs through the local mmx OpenAI-compat shim.
+#
+# Usage:
+#   bin/mmox-shim.sh start                  # launch the shim in the background, write PID/log
+#   bin/mmox-shim.sh stop                   # kill the running shim
+#   bin/mmox-shim.sh status                 # print running state
+#   bin/mmox-shim.sh run <graphify args...> # start (if needed), set env, run graphify
+#
+# The shim itself is bin/mmox-openai-shim.py. After `start`, set in your shell:
+#   eval "$(bin/mmox-shim.sh env)"          # exports OPENAI_BASE_URL=... OPENAI_API_KEY=... OPENAI_MODEL=...
+# or just use `bin/mmox-shim.sh run ...` to dispatch graphify calls with the env pre-configured.
+set -euo pipefail
+
+ROOT="${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+SHIM="${ROOT}/mmox-openai-shim.py"
+PORT="${MMOX_SHIM_PORT:-8765}"
+HOST="${MMOX_SHIM_HOST:-127.0.0.1}"
+# Resolve STATE_DIR defensively. Each layer uses an explicit empty-check so
+# unset OR empty values fall through to the next layer; an explicit guard at
+# the end guarantees STATE_DIR is never empty (which would otherwise collapse
+# LOG_FILE to /shim.log and try to mkdir under /).
+if [ -n "${MMOX_STATE_DIR:-}" ]; then
+    STATE_DIR="$MMOX_STATE_DIR"
+elif [ -n "${HOME:-}" ]; then
+    STATE_DIR="$HOME/.cache/mmox-shim"
+else
+    STATE_DIR="/tmp/mmox-shim"
+fi
+LOG_FILE="${STATE_DIR}/shim.log"
+PID_FILE="${STATE_DIR}/shim.pid"
+DEFAULT_MODEL="${OPENAI_MODEL:-MiniMax-M3}"
+
+mkdir -p "$STATE_DIR"
+
+# Validate that a candidate PID string is a positive integer. Returns 0 only
+# for plain non-empty numeric content (no whitespace, no leading -, no sign).
+# Corrupted PID files (empty, whitespace, multi-line, non-numeric, or zero) are
+# rejected so a kill call never sees garbage as a multi-arg PID list, and never
+# reaches `kill 0`, which would target the entire process group.
+_pid_is_valid() {
+    case "${1:-}" in
+        ''|*[!0-9]*|0) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+    _pid_is_valid "$pid" || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+ensure_running() {
+    if is_running; then
+        pid=$(cat "$PID_FILE")
+        echo "[mmox-shim] already running PID=${pid} on ${HOST}:${PORT}" >&2
+        return 0
+    fi
+    "$SHIM" --host "$HOST" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    new_pid=$!
+    printf '%s\n' "$new_pid" > "$PID_FILE"
+    # Poll for readiness up to ~3s
+    i=0
+    while [ $i -lt 30 ]; do
+        if curl -sS -f "http://${HOST}:${PORT}/healthz" >/dev/null 2>&1; then
+            echo "[mmox-shim] started PID=${new_pid} on ${HOST}:${PORT}" >&2
+            return 0
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    echo "[mmox-shim] started PID=${new_pid} but healthz never came up; check $LOG_FILE" >&2
+    return 1
+}
+
+emit_env() {
+    cat <<EOF
+export OPENAI_BASE_URL="http://${HOST}:${PORT}/v1"
+export OPENAI_API_KEY="mmox-local"
+export OPENAI_MODEL="${DEFAULT_MODEL}"
+export GRAPHIFY_OPENAI_MODEL="${DEFAULT_MODEL}"
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    start)
+        ensure_running
+        ;;
+    stop)
+        if is_running; then
+            pid=$(cat "$PID_FILE")
+            kill "$pid" 2>/dev/null || true
+            rm -f "$PID_FILE"
+            echo "[mmox-shim] stopped" >&2
+        else
+            echo "[mmox-shim] not running" >&2
+        fi
+        ;;
+    status)
+        if is_running; then
+            pid=$(cat "$PID_FILE")
+            echo "running PID=${pid} on ${HOST}:${PORT}"
+            curl -sS "http://${HOST}:${PORT}/healthz" || true
+        else
+            echo "stopped"
+        fi
+        ;;
+    env)
+        emit_env
+        ;;
+    run)
+        ensure_running
+        # Source emit_env vars into this shell, then exec the user's command
+        # with the env exported. We use eval because quoting around values
+        # with `/` is messy to thread through env(1) argv.
+        eval "$(emit_env)"
+        exec "$@"
+        ;;
+    help|--help|-h|"")
+        sed -n '2,12p' "${BASH_SOURCE[0]}"
+        ;;
+    *)
+        echo "unknown command: $cmd" >&2
+        echo "run bin/mmox-shim.sh (no args) for usage" >&2
+        exit 2
+        ;;
+esac
