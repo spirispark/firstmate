@@ -474,6 +474,33 @@ SH
   pass "jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry"
 }
 
+# A pid that `kill -0` still resolves is not necessarily a running process: it
+# may be a zombie, i.e. one that already exited but whose status nobody reaped.
+# fm-lint.sh signals the worker and its ShellCheck child in the same SIGKILL
+# burst, so the worker normally dies before it can reap its own child, and the
+# exited ShellCheck is then orphaned onto PID 1. A GitHub-hosted runner boots
+# systemd as PID 1 and reaps instantly; the self-hosted CI container's PID 1 is
+# not a reaper, so there the entry lingers forever and `kill -0` keeps
+# succeeding on a process that is already dead. Only a non-zombie entry counts
+# as a surviving ShellCheck.
+fm_lint_pid_running() {  # <pid>
+  local pid=$1 state
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [ -r "/proc/$pid/stat" ]; then
+    # Field 3 of stat, read after the last ')' so a comm containing spaces or
+    # parentheses cannot shift the field position.
+    state=$(sed -n 's/.*) \(.\).*/\1/p' "/proc/$pid/stat" 2>/dev/null)
+  else
+    state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  fi
+  # An unreadable state (no /proc and no usable ps) stays "running" so this
+  # helper can never weaken the assertion into passing by accident.
+  case "$state" in
+    Z*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 test_worker_trees_stop_on_signal() {
   local tmp fakebin fixture jobs telemetry lint_tmp pid_file out_file telemetry_file
   local parent_pid shellcheck_pid i parent_rc survivor
@@ -531,11 +558,11 @@ SH
       wait "$parent_pid" 2>/dev/null || parent_rc=$?
       survivor=0
       i=0
-      while [ "$i" -lt 100 ] && kill -0 "$shellcheck_pid" 2>/dev/null; do
+      while [ "$i" -lt 100 ] && fm_lint_pid_running "$shellcheck_pid"; do
         sleep 0.01
         i=$((i + 1))
       done
-      if kill -0 "$shellcheck_pid" 2>/dev/null; then
+      if fm_lint_pid_running "$shellcheck_pid"; then
         survivor=1
         kill -KILL "$shellcheck_pid" 2>/dev/null || true
       fi
