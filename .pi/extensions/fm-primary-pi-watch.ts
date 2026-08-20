@@ -475,7 +475,10 @@ export default function (pi: ExtensionAPI) {
           if (!generationIsLive(owner)) return;
           const message = restoration.failure ? `${classification.message}\n\n${restoration.failure}` : classification.message;
           await sendWake(owner, message, restoration.recovery);
-        })().catch(() => {
+        })().catch((err: unknown) => {
+          // Surface silent wake failures so debug output is visible when the
+          // typed-wake path drops the agent message.
+          process.stderr.write(`[mmox-shim] IIFE error: ${String(err)}\n`);
         });
         return;
       }
