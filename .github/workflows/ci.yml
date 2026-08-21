@@ -20,6 +20,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
@@ -41,6 +42,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Prove complete regression partition
@@ -167,6 +169,9 @@ jobs:
     # are ~4.8 min each. Cap is a hang tripwire with roughly 3x margin, not the
     # expected healthy end of the lane.
     timeout-minutes: 15
+    concurrency:
+      group: firstmate-serial-shard-${{ github.event.pull_request.number || github.ref }}-${{ matrix.shard }}
+      cancel-in-progress: false
     strategy:
       # Every shard reports so one failure never hides another shard's result.
       fail-fast: false
@@ -399,6 +404,7 @@ jobs:
       always() &&
       (github.event_name == 'push' ||
        github.event.pull_request.head.repo.full_name == github.repository)
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Download lane timing artifacts
@@ -482,6 +488,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Symlinks must stay intact
