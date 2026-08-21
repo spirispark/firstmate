@@ -22,7 +22,13 @@ jobs:
   check:
     name: PR must be raised via no-mistakes
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate, matching every self-hosted job in ci.yml.
+    # firstmate is a public repo, so without this an arbitrary fork PR could
+    # schedule work on the captain's self-hosted runner. Kept first in the
+    # condition so fork PRs are gated out before the bot filter is consulted.
     if: >-
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
