@@ -304,7 +304,7 @@ test_pins_an_explicit_version() {
 }
 
 test_installer_retries_transient_download_failure() {
-  local tmp fakebin destination out host_arch test_sha
+  local tmp fakebin destination out
   tmp=$(fm_test_tmproot fm-shellcheck-download)
   fakebin=$(fm_fakebin "$tmp")
   destination="$tmp/bin"
@@ -327,24 +327,16 @@ while [ "$#" -gt 0 ]; do
 done
 exit 2
 SH
-  # Architecture-aware so the retry test still exercises the installer's
-  # pinned-SHA verification on aarch64 runners, where the production
-  # archive is .linux.aarch64.tar.xz rather than .linux.x86_64.tar.xz.
-  host_arch=$(uname -m)
-  case "$host_arch" in
-    aarch64|arm64)
-      test_sha=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
-      ;;
-    *)
-      test_sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-      ;;
-  esac
-  # The installer only ships Linux archives, so report Linux here: the retry
-  # path under test is the same on a Linux runner and a macOS dev machine.
-  fm_lint_stub_uname "$fakebin" Linux "$host_arch"
-  cat > "$fakebin/sha256sum" <<SH
+  # One fixed platform: the retry path is identical on every dispatch arm, and
+  # a stubbed arch keeps this case off the host's own uname, which would
+  # otherwise report an architecture the installer refuses and turn an
+  # unsupported host into a bogus "did not recover" diagnosis.
+  # test_installer_selects_the_archive_for_the_reported_architecture owns the
+  # cross-architecture mapping.
+  fm_lint_stub_uname "$fakebin" Linux x86_64
+  cat > "$fakebin/sha256sum" <<'SH'
 #!/usr/bin/env bash
-printf '${test_sha}  %s\n' "\$1"
+printf '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  %s\n' "$1"
 SH
   cat > "$fakebin/tar" <<'SH'
 #!/usr/bin/env bash
