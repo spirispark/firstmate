@@ -140,6 +140,52 @@ SH
   chmod +x "$fakebin/uname"
 }
 
+# fm_lint_stub_shellcheck_download <fakebin-dir> <version> <sha256>: install the
+# stub toolchain bin/fm-install-shellcheck.sh shells out to for a download. curl
+# appends every URL it is asked for to $FM_TEST_CURL_URL_LOG before writing an
+# empty archive, sha256sum answers with <sha256>, and tar unpacks a fake pinned
+# binary, so a case can observe which release asset the installer resolved for a
+# given platform without reaching the network.
+fm_lint_stub_shellcheck_download() {
+  local fakebin=$1 version=$2 sha=$3
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+url=
+target=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) target=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+printf '%s\n' "$url" >> "$FM_TEST_CURL_URL_LOG"
+[ -z "$target" ] || : > "$target"
+exit 0
+SH
+  cat > "$fakebin/sha256sum" <<SH
+#!/usr/bin/env bash
+printf '${sha}  %s\n' "\$1"
+SH
+  cat > "$fakebin/tar" <<SH
+#!/usr/bin/env bash
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = "-C" ]; then
+    mkdir -p "\$2/shellcheck-v${version}"
+    cat > "\$2/shellcheck-v${version}/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+printf 'ShellCheck - shell script analysis tool\nversion: ${version}\n'
+EOF
+    chmod +x "\$2/shellcheck-v${version}/shellcheck"
+    exit 0
+  fi
+  shift
+done
+exit 2
+SH
+  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar"
+}
+
 test_changed_mode_lints_only_the_changed_file() {
   local tmp fakebin log diff_file out target
   tmp=$(fm_test_tmproot fm-lint-changed)
@@ -328,6 +374,45 @@ SH
   assert_contains "$out" "download attempt 3 failed; retrying" "installer did not disclose its third retry"
   [ -x "$destination/shellcheck" ] || fail "installer did not install ShellCheck after retrying"
   pass "ShellCheck installer retries a transient download failure"
+}
+
+test_installer_selects_the_archive_for_the_reported_architecture() {
+  local tmp row machine expected sha case_dir fakebin destination url_log
+  local out rc requested want
+  tmp=$(fm_test_tmproot fm-shellcheck-arch)
+  # <uname -m> <release asset arch> <upstream sha256 for that asset>. Both
+  # digests are the ones published for the pinned release, so a case fails if
+  # the dispatch ever pairs an architecture with the other archive or the
+  # other checksum.
+  for row in \
+    'aarch64 aarch64 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588' \
+    'arm64 aarch64 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588' \
+    'x86_64 x86_64 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' \
+    'amd64 x86_64 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198'; do
+    IFS=' ' read -r machine expected sha <<<"$row"
+    case_dir="$tmp/$machine"
+    mkdir -p "$case_dir"
+    fakebin=$(fm_fakebin "$case_dir")
+    destination="$case_dir/bin"
+    url_log="$case_dir/curl-urls"
+    : > "$url_log"
+    fm_lint_stub_shellcheck_download "$fakebin" "$REQUIRED" "$sha"
+    fm_lint_stub_uname "$fakebin" Linux "$machine"
+
+    rc=0
+    out=$(FM_TEST_CURL_URL_LOG="$url_log" PATH="$fakebin:$PATH" \
+      "$INSTALLER" "$destination" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] \
+      || fail "installer failed on a supported Linux $machine host"$'\n'"$out"
+    want="https://github.com/koalaman/shellcheck/releases/download/v$REQUIRED"
+    want="$want/shellcheck-v$REQUIRED.linux.$expected.tar.xz"
+    requested=$(cat "$url_log")
+    [ "$requested" = "$want" ] \
+      || fail "uname -m $machine resolved the wrong release asset"$'\n'"want: $want"$'\n'"got:  $requested"
+    [ -x "$destination/shellcheck" ] \
+      || fail "installer did not install ShellCheck for $machine"
+  done
+  pass "ShellCheck installer resolves the release asset matching the reported architecture"
 }
 
 test_installer_refuses_a_non_linux_platform() {
@@ -709,6 +794,7 @@ SH
 test_list_files_reports_the_shell_inventory
 test_pins_an_explicit_version
 test_installer_retries_transient_download_failure
+test_installer_selects_the_archive_for_the_reported_architecture
 test_installer_refuses_a_non_linux_platform
 test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
