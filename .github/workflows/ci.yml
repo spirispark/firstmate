@@ -308,6 +308,35 @@ jobs:
             herdr session list --json || true
             exit 1
           }
+      - name: Kill job-started Herdr server
+        # The default-session step started the Herdr server in the
+        # background and stored its PID. fm-herdr-ci-cleanup.sh only
+        # owns lab sessions, not the server itself, so without this step
+        # the server (and any port it bound) leaked past job end and
+        # eventually bled the next job in the same runner container.
+        if: always()
+        run: |
+          set -eu
+          pid_file="$RUNNER_TEMP/fm-herdr/default-server.pid"
+          [ -f "$pid_file" ] || { echo "no server pid file at $pid_file; nothing to kill"; exit 0; }
+          pid=$(cat "$pid_file")
+          [ -n "$pid" ] || { echo "server pid file $pid_file is empty; nothing to kill"; exit 0; }
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" || true
+            attempt=0
+            while [ "$attempt" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+              sleep 0.1
+              attempt=$((attempt + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "::warning::Herdr server pid $pid did not exit cleanly; sending SIGKILL"
+              kill -KILL "$pid" 2>/dev/null || true
+            else
+              echo "killed Herdr server pid $pid"
+            fi
+          else
+            echo "Herdr server pid $pid already exited; nothing to kill"
+          fi
       - name: Upload Herdr timing and diagnostics
         if: always()
         uses: actions/upload-artifact@v4

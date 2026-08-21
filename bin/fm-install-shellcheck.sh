@@ -7,8 +7,26 @@ set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$("$ROOT/bin/fm-lint.sh" --required-version)"
-SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-ARCHIVE="shellcheck-v${VERSION}.linux.x86_64.tar.xz"
+# Pin one SHA per Linux architecture so a fork-PR cannot substitute a
+# different build under the same version. The SHAs are cross-checked
+# against the GitHub release API digest for the pinned version; an
+# unsupported architecture fails closed instead of silently picking
+# whichever archive happens to be reachable.
+case "$(uname -m)" in
+  aarch64|arm64)
+    SHA256=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+    ARCH=aarch64
+    ;;
+  x86_64|amd64)
+    SHA256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    ARCH=x86_64
+    ;;
+  *)
+    printf 'fm-install-shellcheck.sh: unsupported architecture: %s\n' "$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+ARCHIVE="shellcheck-v${VERSION}.linux.${ARCH}.tar.xz"
 URL="https://github.com/koalaman/shellcheck/releases/download/v${VERSION}/${ARCHIVE}"
 DESTINATION=${1:?usage: fm-install-shellcheck.sh <destination-directory>}
 TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fm-shellcheck.XXXXXX")

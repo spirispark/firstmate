@@ -263,9 +263,20 @@ while [ "$#" -gt 0 ]; do
 done
 exit 2
 SH
-  cat > "$fakebin/sha256sum" <<'SH'
+  # Architecture-aware so the retry test still exercises the installer's
+  # pinned-SHA verification on aarch64 runners, where the production
+  # archive is .linux.aarch64.tar.xz rather than .linux.x86_64.tar.xz.
+  case "$(uname -m)" in
+    aarch64|arm64)
+      test_sha=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+      ;;
+    *)
+      test_sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+      ;;
+  esac
+  cat > "$fakebin/sha256sum" <<SH
 #!/usr/bin/env bash
-printf '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  %s\n' "$1"
+printf '${test_sha}  %s\n' "\$1"
 SH
   cat > "$fakebin/tar" <<'SH'
 #!/usr/bin/env bash
