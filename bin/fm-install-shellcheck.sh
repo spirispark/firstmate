@@ -10,8 +10,15 @@ VERSION="$("$ROOT/bin/fm-lint.sh" --required-version)"
 # Pin one SHA per Linux architecture so a fork-PR cannot substitute a
 # different build under the same version. The SHAs are cross-checked
 # against the GitHub release API digest for the pinned version; an
-# unsupported architecture fails closed instead of silently picking
+# unsupported platform fails closed instead of silently picking
 # whichever archive happens to be reachable.
+case "$(uname -s)" in
+  Linux) ;;
+  *)
+    printf 'fm-install-shellcheck.sh: unsupported operating system: %s (the pinned archives are Linux-only)\n' "$(uname -s)" >&2
+    exit 1
+    ;;
+esac
 case "$(uname -m)" in
   aarch64|arm64)
     SHA256=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588

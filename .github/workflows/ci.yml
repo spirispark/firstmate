@@ -340,18 +340,31 @@ jobs:
         if: always()
         run: |
           set -eu
+          server_running() {  # <pid>
+            local state=
+            kill -0 "$1" 2>/dev/null || return 1
+            if [ -r "/proc/$1/stat" ]; then
+              state=$(sed -n 's/.*) \(.\).*/\1/p' "/proc/$1/stat" 2>/dev/null)
+            else
+              state=$(ps -o state= -p "$1" 2>/dev/null | tr -d '[:space:]')
+            fi
+            case "$state" in
+              Z*) return 1 ;;
+              *) return 0 ;;
+            esac
+          }
           pid_file="$RUNNER_TEMP/fm-herdr/default-server.pid"
           [ -f "$pid_file" ] || { echo "no server pid file at $pid_file; nothing to kill"; exit 0; }
           pid=$(cat "$pid_file")
           [ -n "$pid" ] || { echo "server pid file $pid_file is empty; nothing to kill"; exit 0; }
-          if kill -0 "$pid" 2>/dev/null; then
+          if server_running "$pid"; then
             kill "$pid" || true
             attempt=0
-            while [ "$attempt" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
+            while [ "$attempt" -lt 50 ] && server_running "$pid"; do
               sleep 0.1
               attempt=$((attempt + 1))
             done
-            if kill -0 "$pid" 2>/dev/null; then
+            if server_running "$pid"; then
               echo "::warning::Herdr server pid $pid did not exit cleanly; sending SIGKILL"
               kill -KILL "$pid" 2>/dev/null || true
             else

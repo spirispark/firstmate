@@ -122,6 +122,24 @@ SH
   chmod +x "$fakebin/shellcheck"
 }
 
+# fm_lint_stub_uname <fakebin-dir> <os> <machine>: install a uname stub so a
+# platform-gated script under test resolves the same platform on every host
+# instead of whatever the machine running the suite happens to be. Only the
+# forms firstmate's shell owners use are answered; any other invocation fails
+# loudly rather than silently falling back to the real host.
+fm_lint_stub_uname() {
+  local fakebin=$1 os=$2 machine=$3
+  cat > "$fakebin/uname" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  ''|-s) printf '%s\n' '${os}' ;;
+  -m) printf '%s\n' '${machine}' ;;
+  *) printf 'uname stub: unexpected argument: %s\n' "\$1" >&2; exit 2 ;;
+esac
+SH
+  chmod +x "$fakebin/uname"
+}
+
 test_changed_mode_lints_only_the_changed_file() {
   local tmp fakebin log diff_file out target
   tmp=$(fm_test_tmproot fm-lint-changed)
@@ -240,7 +258,7 @@ test_pins_an_explicit_version() {
 }
 
 test_installer_retries_transient_download_failure() {
-  local tmp fakebin destination out
+  local tmp fakebin destination out host_arch test_sha
   tmp=$(fm_test_tmproot fm-shellcheck-download)
   fakebin=$(fm_fakebin "$tmp")
   destination="$tmp/bin"
@@ -266,7 +284,8 @@ SH
   # Architecture-aware so the retry test still exercises the installer's
   # pinned-SHA verification on aarch64 runners, where the production
   # archive is .linux.aarch64.tar.xz rather than .linux.x86_64.tar.xz.
-  case "$(uname -m)" in
+  host_arch=$(uname -m)
+  case "$host_arch" in
     aarch64|arm64)
       test_sha=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
       ;;
@@ -274,6 +293,9 @@ SH
       test_sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
       ;;
   esac
+  # The installer only ships Linux archives, so report Linux here: the retry
+  # path under test is the same on a Linux runner and a macOS dev machine.
+  fm_lint_stub_uname "$fakebin" Linux "$host_arch"
   cat > "$fakebin/sha256sum" <<SH
 #!/usr/bin/env bash
 printf '${test_sha}  %s\n' "\$1"
@@ -306,6 +328,31 @@ SH
   assert_contains "$out" "download attempt 3 failed; retrying" "installer did not disclose its third retry"
   [ -x "$destination/shellcheck" ] || fail "installer did not install ShellCheck after retrying"
   pass "ShellCheck installer retries a transient download failure"
+}
+
+test_installer_refuses_a_non_linux_platform() {
+  local tmp fakebin destination out rc
+  tmp=$(fm_test_tmproot fm-shellcheck-platform)
+  fakebin=$(fm_fakebin "$tmp")
+  destination="$tmp/bin"
+  cat > "$fakebin/curl" <<SH
+#!/usr/bin/env bash
+: > "$tmp/curl-ran"
+exit 0
+SH
+  chmod +x "$fakebin/curl"
+  fm_lint_stub_uname "$fakebin" Darwin arm64
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "installer accepted a platform with no pinned archive"$'\n'"$out"
+  assert_contains "$out" "Darwin" "installer did not name the refused operating system"
+  [ ! -e "$tmp/curl-ran" ] \
+    || fail "installer fetched a Linux archive on a platform that cannot run it"
+  [ ! -e "$destination/shellcheck" ] \
+    || fail "installer installed a Linux binary on a platform that cannot run it"
+  pass "ShellCheck installer fails closed on a platform with no pinned archive"
 }
 
 test_rejects_wrong_shellcheck_version() {
@@ -662,6 +709,7 @@ SH
 test_list_files_reports_the_shell_inventory
 test_pins_an_explicit_version
 test_installer_retries_transient_download_failure
+test_installer_refuses_a_non_linux_platform
 test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
