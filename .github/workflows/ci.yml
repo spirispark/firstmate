@@ -20,7 +20,13 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    timeout-minutes: 10
+    # bin/fm-lint.sh forces full_lint=1 under GITHUB_ACTIONS=true, so CI
+    # lints the entire canonical set (293 scripts, ~155k lines) through
+    # pinned ShellCheck 0.11.0 on the self-hosted ARM64 image. Observed
+    # wall at the round-1 10-minute cap was a hard cancellation, not a
+    # clean exit; 20 minutes provides the same hang-tripwire role with
+    # margin for the actual work.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
