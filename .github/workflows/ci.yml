@@ -13,6 +13,13 @@ jobs:
   lint:
     name: Lint shell scripts
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth: firstmate is a public repo. Without this gate a fork
+    # PR could run bin/fm-install-shellcheck.sh / bin/fm-lint.sh on the
+    # captain's self-hosted runner. Allow push events and same-repo PRs;
+    # skip fork PRs. Mirrors the gate already in no-mistakes-required.yml.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v6
       - name: Install pinned ShellCheck
@@ -30,6 +37,10 @@ jobs:
   test-coverage:
     name: Test coverage guard
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate; see the lint job for the full rationale.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v6
       - name: Prove complete regression partition
@@ -40,6 +51,10 @@ jobs:
   tests-portable-parallel-1:
     name: Behavior portable parallel 1
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate; see the lint job for the full rationale.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     # ubuntu-latest exported C.UTF-8; the self-hosted image leaves the bare
     # POSIX locale, where bash slices ${var:0:1} per byte instead of per
     # character and the suite's U+2063 injection sentinel stops matching. Lane
@@ -90,6 +105,10 @@ jobs:
   tests-portable-parallel-2:
     name: Behavior portable parallel 2
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate; see the lint job for the full rationale.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     # Same self-hosted locale pin as shard 1 above.
     env:
       LANG: C.UTF-8
@@ -203,6 +222,10 @@ jobs:
   tests-herdr:
     name: Behavior tests (Herdr)
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate; see the lint job for the full rationale.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     # Same self-hosted locale pin as the portable parallel shards above. Without
     # it fm-afk-inject-herdr-e2e Scenario A reads the U+2063 digest sentinel as a
     # bare 0xe2 byte and classifies an injection as human input.
@@ -357,7 +380,12 @@ jobs:
       - tests-portable-parallel-2
       - tests-portable-serial
       - tests-herdr
-    if: always()
+    # Preserve the upstream-failure semantic (always()) and add the
+    # defense-in-depth fork-PR gate; see the lint job for the rationale.
+    if: >-
+      always() &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v6
       - name: Download lane timing artifacts
@@ -437,6 +465,10 @@ jobs:
   invariants:
     name: Repo invariants
     runs-on: [self-hosted, linux, ARM64]
+    # Defense-in-depth fork-PR gate; see the lint job for the full rationale.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v6
       - name: Symlinks must stay intact
