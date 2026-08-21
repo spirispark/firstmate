@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # fm-install-shellcheck.sh - install CI's pinned, verified ShellCheck build.
 #
+# Linux only, with one verified SHA per supported architecture; any other
+# operating system or architecture fails closed instead of installing.
+#
 # Usage:
 #   fm-install-shellcheck.sh <destination-directory>
 set -eu
