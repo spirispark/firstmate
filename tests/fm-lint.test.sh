@@ -122,6 +122,70 @@ SH
   chmod +x "$fakebin/shellcheck"
 }
 
+# fm_lint_stub_uname <fakebin-dir> <os> <machine>: install a uname stub so a
+# platform-gated script under test resolves the same platform on every host
+# instead of whatever the machine running the suite happens to be. Only the
+# forms firstmate's shell owners use are answered; any other invocation fails
+# loudly rather than silently falling back to the real host.
+fm_lint_stub_uname() {
+  local fakebin=$1 os=$2 machine=$3
+  cat > "$fakebin/uname" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  ''|-s) printf '%s\n' '${os}' ;;
+  -m) printf '%s\n' '${machine}' ;;
+  *) printf 'uname stub: unexpected argument: %s\n' "\$1" >&2; exit 2 ;;
+esac
+SH
+  chmod +x "$fakebin/uname"
+}
+
+# fm_lint_stub_shellcheck_download <fakebin-dir> <version> <sha256>: install the
+# stub toolchain bin/fm-install-shellcheck.sh shells out to for a download. curl
+# appends every URL it is asked for to $FM_TEST_CURL_URL_LOG before writing an
+# empty archive, sha256sum answers with <sha256>, and tar unpacks a fake pinned
+# binary, so a case can observe which release asset the installer resolved for a
+# given platform without reaching the network.
+fm_lint_stub_shellcheck_download() {
+  local fakebin=$1 version=$2 sha=$3
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+url=
+target=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) target=$2; shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+printf '%s\n' "$url" >> "$FM_TEST_CURL_URL_LOG"
+[ -z "$target" ] || : > "$target"
+exit 0
+SH
+  cat > "$fakebin/sha256sum" <<SH
+#!/usr/bin/env bash
+printf '${sha}  %s\n' "\$1"
+SH
+  cat > "$fakebin/tar" <<SH
+#!/usr/bin/env bash
+while [ "\$#" -gt 0 ]; do
+  if [ "\$1" = "-C" ]; then
+    mkdir -p "\$2/shellcheck-v${version}"
+    cat > "\$2/shellcheck-v${version}/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+printf 'ShellCheck - shell script analysis tool\nversion: ${version}\n'
+EOF
+    chmod +x "\$2/shellcheck-v${version}/shellcheck"
+    exit 0
+  fi
+  shift
+done
+exit 2
+SH
+  chmod +x "$fakebin/curl" "$fakebin/sha256sum" "$fakebin/tar"
+}
+
 test_changed_mode_lints_only_the_changed_file() {
   local tmp fakebin log diff_file out target
   tmp=$(fm_test_tmproot fm-lint-changed)
@@ -263,6 +327,13 @@ while [ "$#" -gt 0 ]; do
 done
 exit 2
 SH
+  # One fixed platform: the retry path is identical on every dispatch arm, and
+  # a stubbed arch keeps this case off the host's own uname, which would
+  # otherwise report an architecture the installer refuses and turn an
+  # unsupported host into a bogus "did not recover" diagnosis.
+  # test_installer_selects_the_archive_for_the_reported_architecture owns the
+  # cross-architecture mapping.
+  fm_lint_stub_uname "$fakebin" Linux x86_64
   cat > "$fakebin/sha256sum" <<'SH'
 #!/usr/bin/env bash
 printf '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  %s\n' "$1"
@@ -295,6 +366,70 @@ SH
   assert_contains "$out" "download attempt 3 failed; retrying" "installer did not disclose its third retry"
   [ -x "$destination/shellcheck" ] || fail "installer did not install ShellCheck after retrying"
   pass "ShellCheck installer retries a transient download failure"
+}
+
+test_installer_selects_the_archive_for_the_reported_architecture() {
+  local tmp row machine expected sha case_dir fakebin destination url_log
+  local out rc requested want
+  tmp=$(fm_test_tmproot fm-shellcheck-arch)
+  # <uname -m> <release asset arch> <upstream sha256 for that asset>. Both
+  # digests are the ones published for the pinned release, so a case fails if
+  # the dispatch ever pairs an architecture with the other archive or the
+  # other checksum.
+  for row in \
+    'aarch64 aarch64 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588' \
+    'arm64 aarch64 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588' \
+    'x86_64 x86_64 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' \
+    'amd64 x86_64 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198'; do
+    IFS=' ' read -r machine expected sha <<<"$row"
+    case_dir="$tmp/$machine"
+    mkdir -p "$case_dir"
+    fakebin=$(fm_fakebin "$case_dir")
+    destination="$case_dir/bin"
+    url_log="$case_dir/curl-urls"
+    : > "$url_log"
+    fm_lint_stub_shellcheck_download "$fakebin" "$REQUIRED" "$sha"
+    fm_lint_stub_uname "$fakebin" Linux "$machine"
+
+    rc=0
+    out=$(FM_TEST_CURL_URL_LOG="$url_log" PATH="$fakebin:$PATH" \
+      "$INSTALLER" "$destination" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] \
+      || fail "installer failed on a supported Linux $machine host"$'\n'"$out"
+    want="https://github.com/koalaman/shellcheck/releases/download/v$REQUIRED"
+    want="$want/shellcheck-v$REQUIRED.linux.$expected.tar.xz"
+    requested=$(cat "$url_log")
+    [ "$requested" = "$want" ] \
+      || fail "uname -m $machine resolved the wrong release asset"$'\n'"want: $want"$'\n'"got:  $requested"
+    [ -x "$destination/shellcheck" ] \
+      || fail "installer did not install ShellCheck for $machine"
+  done
+  pass "ShellCheck installer resolves the release asset matching the reported architecture"
+}
+
+test_installer_refuses_a_non_linux_platform() {
+  local tmp fakebin destination out rc
+  tmp=$(fm_test_tmproot fm-shellcheck-platform)
+  fakebin=$(fm_fakebin "$tmp")
+  destination="$tmp/bin"
+  cat > "$fakebin/curl" <<SH
+#!/usr/bin/env bash
+: > "$tmp/curl-ran"
+exit 0
+SH
+  chmod +x "$fakebin/curl"
+  fm_lint_stub_uname "$fakebin" Darwin arm64
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" "$INSTALLER" "$destination" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "installer accepted a platform with no pinned archive"$'\n'"$out"
+  assert_contains "$out" "Darwin" "installer did not name the refused operating system"
+  [ ! -e "$tmp/curl-ran" ] \
+    || fail "installer fetched a Linux archive on a platform that cannot run it"
+  [ ! -e "$destination/shellcheck" ] \
+    || fail "installer installed a Linux binary on a platform that cannot run it"
+  pass "ShellCheck installer fails closed on a platform with no pinned archive"
 }
 
 test_rejects_wrong_shellcheck_version() {
@@ -474,6 +609,33 @@ SH
   pass "jobs=1 and jobs=2 preserve deterministic diagnostics, failures, cleanup bounds, and quiet telemetry"
 }
 
+# A pid that `kill -0` still resolves is not necessarily a running process: it
+# may be a zombie, i.e. one that already exited but whose status nobody reaped.
+# fm-lint.sh signals the worker and its ShellCheck child in the same SIGKILL
+# burst, so the worker normally dies before it can reap its own child, and the
+# exited ShellCheck is then orphaned onto PID 1. A GitHub-hosted runner boots
+# systemd as PID 1 and reaps instantly; the self-hosted CI container's PID 1 is
+# not a reaper, so there the entry lingers forever and `kill -0` keeps
+# succeeding on a process that is already dead. Only a non-zombie entry counts
+# as a surviving ShellCheck.
+fm_lint_pid_running() {  # <pid>
+  local pid=$1 state
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [ -r "/proc/$pid/stat" ]; then
+    # Field 3 of stat, read after the last ')' so a comm containing spaces or
+    # parentheses cannot shift the field position.
+    state=$(sed -n 's/.*) \(.\).*/\1/p' "/proc/$pid/stat" 2>/dev/null)
+  else
+    state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  fi
+  # An unreadable state (no /proc and no usable ps) stays "running" so this
+  # helper can never weaken the assertion into passing by accident.
+  case "$state" in
+    Z*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 test_worker_trees_stop_on_signal() {
   local tmp fakebin fixture jobs telemetry lint_tmp pid_file out_file telemetry_file
   local parent_pid shellcheck_pid i parent_rc survivor
@@ -531,11 +693,11 @@ SH
       wait "$parent_pid" 2>/dev/null || parent_rc=$?
       survivor=0
       i=0
-      while [ "$i" -lt 100 ] && kill -0 "$shellcheck_pid" 2>/dev/null; do
+      while [ "$i" -lt 100 ] && fm_lint_pid_running "$shellcheck_pid"; do
         sleep 0.01
         i=$((i + 1))
       done
-      if kill -0 "$shellcheck_pid" 2>/dev/null; then
+      if fm_lint_pid_running "$shellcheck_pid"; then
         survivor=1
         kill -KILL "$shellcheck_pid" 2>/dev/null || true
       fi
@@ -624,6 +786,8 @@ SH
 test_list_files_reports_the_shell_inventory
 test_pins_an_explicit_version
 test_installer_retries_transient_download_failure
+test_installer_selects_the_archive_for_the_reported_architecture
+test_installer_refuses_a_non_linux_platform
 test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
