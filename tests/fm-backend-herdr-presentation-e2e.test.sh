@@ -1286,8 +1286,16 @@ spawn_task "$PRIMARY_WAVE_ID" "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/primary-wa
 PRIMARY_WAVE_PID=$!
 spawn_task "$BRAVO_WAVE_ID" "$SECOND_HOME_B" "$PROJECT_DIR" > "$TMP_ROOT/bravo-wave-resume.out" 2> "$TMP_ROOT/bravo-wave-resume.err" &
 BRAVO_WAVE_PID=$!
-wait "$PRIMARY_WAVE_PID" || fail "concurrent primary recovery failed: $(cat "$TMP_ROOT/primary-wave-resume.err")"
-wait "$BRAVO_WAVE_PID" || fail "concurrent secondmate recovery failed: $(cat "$TMP_ROOT/bravo-wave-resume.err")"
+PRIMARY_WAVE_STATUS=0
+BRAVO_WAVE_STATUS=0
+wait "$PRIMARY_WAVE_PID" || PRIMARY_WAVE_STATUS=$?
+wait "$BRAVO_WAVE_PID" || BRAVO_WAVE_STATUS=$?
+if [ "$PRIMARY_WAVE_STATUS" -ne 0 ]; then
+  fail "concurrent primary recovery failed: $(cat "$TMP_ROOT/primary-wave-resume.err"); concurrent secondmate status=$BRAVO_WAVE_STATUS: $(cat "$TMP_ROOT/bravo-wave-resume.err")"
+fi
+if [ "$BRAVO_WAVE_STATUS" -ne 0 ]; then
+  fail "concurrent secondmate recovery failed: $(cat "$TMP_ROOT/bravo-wave-resume.err"); concurrent primary status=$PRIMARY_WAVE_STATUS: $(cat "$TMP_ROOT/primary-wave-resume.err")"
+fi
 PRIMARY_WAVE_NEW_WT=$(remember_meta_worktree "$PRIMARY_WAVE_META")
 BRAVO_WAVE_NEW_WT=$(remember_meta_worktree "$BRAVO_WAVE_META")
 PRIMARY_WAVE_NEW_PANE=$(grep '^herdr_pane_id=' "$PRIMARY_WAVE_META" | cut -d= -f2-)
