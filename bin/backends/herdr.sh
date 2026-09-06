@@ -36,7 +36,7 @@
 # both fixes first shipped in Herdr 0.8.0, which is the version floor for
 # default-on projection (FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION). Projected cleanup
 # therefore serializes under the session lock, repositions a doomed workspace
-# behind the focused one when needed, and ends its verified lone idle shell
+# behind the focused one when needed, and ends its verified idle shell
 # so Herdr removes the emptied workspace through the focus-preserving
 # pane-death path, with the exact pre-close tab restore as the backstop and a
 # refusal to close the active tab itself.
@@ -103,10 +103,11 @@ FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
 # The version floor for DEFAULT-ON presentation projection. Projection turns
 # every crewmate teardown into a workspace-emptying removal, and the focus-safe
 # removal plan can only avoid Herdr's focus-stealing explicit close while the
-# doomed pane holds a provably lone idle childless shell; a persistent child of
-# that shell (gitstatusd, a zsh-async worker, direnv) makes the plan fall back
-# to the plain explicit close, which steals focus on every release without the
-# two upstream focus fixes (PR #1877 commit 165dca45, PR #1912 commit a979916).
+# doomed pane holds a proved idle shell with no non-helper descendants; a
+# persistent child of that shell (gitstatusd, a zsh-async worker, direnv) makes
+# the plan fall back to the plain explicit close, which steals focus on every
+# release without the two upstream focus fixes (PR #1877 commit 165dca45 and
+# PR #1912 commit a979916).
 # Herdr 0.8.0 is the first release carrying both, so a home that configured
 # nothing is projected only at or above it. An explicit "on" is still honored
 # below the floor.
@@ -832,7 +833,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
 # When the close would empty the target workspace, Herdr 0.7.5's explicit
 # close moves focus to the workspace's neighbor, so the close is planned by
 # fm_backend_herdr_emptying_close_plan: reposition the doomed workspace
-# behind the focused one when needed, then end the pane's verified lone idle
+# behind the focused one when needed, then end the pane's verified idle
 # shell so Herdr removes the emptied workspace through its focus-preserving
 # pane-death path. The exact-tab restore below remains the backstop, and any
 # ambiguity falls back to the plain explicit close, which the backstop masks
@@ -933,16 +934,17 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 #   by PR #1912, commit a979916).
 # Both fixes first shipped in Herdr 0.8.0 (protocol 19), verified 2026-08-05.
 # Firstmate therefore removes a doomed non-focused workspace by ending its
-# verified lone idle shell (the pane-death path), repositioning it behind the
+# verified idle shell (the pane-death path), repositioning it behind the
 # focused workspace first when needed. Moving it to the end preserves every
 # other workspace's relative order, so no presentation ordering change
 # persists.
 # That reasoning covers the pane-death route only. The plan's plain-close
 # FALLBACK is reachable exactly when the doomed pane's shell cannot be proved
-# lone, childless, and idle - a persistent gitstatusd, zsh-async worker, or
-# direnv fails that proof permanently - and on a release without both fixes the
-# fallback is the focus-stealing close itself, so the mitigation is conditional
-# rather than unconditional and a version gate IS required. Default-on
+# idle with either no children or only the verified v0.8.2 helper-shell child
+# shape - a persistent gitstatusd, zsh-async worker, or direnv fails that proof
+# permanently - and on a release without both fixes the fallback is the
+# focus-stealing close itself, so the mitigation is conditional rather than
+# unconditional and a version gate IS required. Default-on
 # projection is therefore floored at FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION,
 # where every removal primitive preserves focus and the proof stops being
 # load-bearing. That floor has ONE owner, the spawn-time gate
@@ -984,7 +986,7 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # exact pane. The LAST echoed line is the plan: "plain" (use the ordinary
 # explicit close; below the presentation version floor the exact-tab restore
 # backstop masks the focus move it causes when it empties a non-focused
-# workspace) or "death <shell-pid>" (end the proved lone idle shell so Herdr
+# workspace) or "death <shell-pid>" (end the proved idle shell so Herdr
 # removes the emptied workspace through its focus-preserving pane-death path).
 # Whenever the repositioning mover was invoked, a preceding
 # "moved<TAB><ws><TAB><original-index><TAB><socket><TAB><focused><TAB><pre-move-order-json>"
@@ -995,7 +997,7 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # and one pane, both the target), the target workspace to sit behind the
 # focused one (repositioned to the end first when it does not, with the move
 # verified against the server-returned order and focus), and the exact pane
-# to hold one provably lone idle recognized shell.
+# to hold one provably idle recognized shell with no non-helper descendants.
 fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <tab-id> <focused-workspace-id>
   local session=$1 pane_id=$2 ws_id=$3 tab_id=$4 focused_ws=$5
   local tabs panes list indices r rest a len capable socket mover response move_status shell_pid before_order
@@ -1121,13 +1123,13 @@ FMEOF
   fi
 }
 
-# fm_backend_herdr_death_close_pane: end the exact pane's proved lone idle
+# fm_backend_herdr_death_close_pane: end the exact pane's proved idle
 # shell so Herdr removes the emptied workspace through its focus-preserving
 # pane-death path, then confirm the pane is gone.
 # Each signal is sent only while the exact pane still owns the recorded pid
-# as its lone idle shell: SIGHUP relies on the proof taken just before, and
+# as its idle shell: SIGHUP relies on the proof taken just before, and
 # the SIGKILL escalation re-reads the pane's process information and refuses
-# unless the same pid is still the pane's strict bare idle shell, so an
+# unless the same pid is still the pane's strict idle shell, so an
 # exited or reused pid is never signaled.
 # Returns 0 only when the pane is confirmed gone.
 fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
@@ -1178,6 +1180,31 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
   return 1
 }
 
+fm_backend_herdr_pid_argv_is_bare_shell() {  # <ps-bin> <pid>
+  local args shell_arg shell_name
+  args=$("$1" -p "$2" -o args= 2>/dev/null) || return 1
+  args=$(printf '%s\n' "$args" | awk 'NR == 1 { $1=$1; print; exit }')
+  [ -n "$args" ] || return 1
+  case "$args" in *[[:space:]]*) return 1 ;; esac
+  shell_arg=$args
+  shell_name=${shell_arg#-}
+  shell_name=${shell_name##*/}
+  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) return 0 ;; esac
+  return 1
+}
+
+fm_backend_herdr_pid_is_idle_helper_shell() {  # <ps-bin> <pid> <process-table-rows>
+  local ps_bin=$1 pid=$2 rows=$3 stat
+  fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$pid" || return 1
+  fm_backend_herdr_pid_argv_is_bare_shell "$ps_bin" "$pid" || return 1
+  stat=$("$ps_bin" -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
+  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+  printf '%s\n' "$rows" | awk -v helper="$pid" '
+    $2 == helper { child++ }
+    END { exit(child == 0 ? 0 : 1) }
+  '
+}
+
 # fm_backend_herdr_pane_idle_shell_pid: print the shell pid of <pane-id> only
 # when the exact pane provably holds one idle recognized shell as its
 # foreground: pane process-info agrees on the pane id, the shell pid is both
@@ -1185,17 +1212,14 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
 # foreground process name and argv0 resolve to the same recognized shell, and
 # the shell sits in a sleeping or idle state.
 # v0.8.2 restores a session's laid-out shells as zsh with a stable idle
-# qterm helper child (verified empirically on the side-by-side v0.8.2 lab:
-# the helper is always a recognized shell, always sleeping, never carries
-# the foreground); the previous v0.7.5 requirement that the shell row be
-# entirely childless refused every restored pane even when the helper was
-# benign. The foreground-contract checks above are sufficient: any children
-# the shell hosts are, by definition, background descendants, cannot take
-# TTY input from the shell, and are reaped when the shell is signaled in
-# the pane-death close path. The remaining foreground churn from transient
-# prompt helpers (workspace.move relayout spawning starship for a few
-# samples, verified on the real 0.7.5 lab) is still handled by the bounded
-# settle retry below: a genuinely busy pane fails every sample and refuses.
+# qterm helper child: a direct, childless, sleeping helper whose OS command is
+# the same bare shell shape. The previous v0.7.5 requirement that the shell row
+# be entirely childless refused every restored pane even when that helper was
+# benign, but every other descendant still fails the proof. The remaining
+# foreground churn from transient prompt helpers (workspace.move relayout
+# spawning starship for a few samples, verified on the real 0.7.5 lab) is still
+# handled by the bounded settle retry below: a genuinely busy pane fails every
+# sample and refuses.
 # This is the single owner of the idle-shell proof; the session-start
 # projection cleanup and every pane-death close path both rely on it.
 fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
@@ -1215,7 +1239,7 @@ fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
 # contract and the settle retry.
 fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid foreground_pgid count
-  local process_pid name argv0 shell_name rows stat ps_bin
+  local process_pid name argv0 shell_name rows stat ps_bin children child_pid
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -1248,15 +1272,17 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
   rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null) || return 1
-  # The shell pid row must exist in the OS process table; any child rows
-  # (e.g. a stable idle qterm helper under v0.8.2 restored panes) are
-  # background descendants whose presence does not change the foreground
-  # contract and does not authorize any non-shell process to receive TTY
-  # input. See fm_backend_herdr_pane_idle_shell_pid above.
-  printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
+  children=$(printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
     $1 == shell { found++ }
+    $2 == shell { print $1 }
     END { exit(found == 1 ? 0 : 1) }
-  ' || return 1
+  ') || return 1
+  for child_pid in $children; do
+    case "$child_pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$child_pid" != "$shell_pid" ] || return 1
+    [ "$child_pid" -gt 1 ] || return 1
+    fm_backend_herdr_pid_is_idle_helper_shell "$ps_bin" "$child_pid" "$rows" || return 1
+  done
   stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
   case "$stat" in S*|I*) ;; *) return 1 ;; esac
   printf '%s\n' "$shell_pid"

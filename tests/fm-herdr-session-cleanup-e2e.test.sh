@@ -116,8 +116,8 @@ while [ "$attempt" -lt 50 ]; do
   sleep 0.1
   attempt=$((attempt + 1))
 done
-[ "$attempt" -lt 50 ] || fail 'restored child did not converge to the idle-shell foreground shape with stable helper children'
-pass 'real named lab reproduced the exact restored one-tab one-pane foreground-shell no-agent idle shape with stable v0.8.2 helper children allowed'
+[ "$attempt" -lt 50 ] || fail 'restored child did not converge to the helper-only idle-shell foreground shape'
+pass 'real named lab reproduced the exact restored one-tab one-pane foreground-shell no-agent idle shape with v0.8.2 qterm helpers allowed'
 
 FM_HOME="$HOME_DIR" FM_BACKEND=herdr HERDR_SESSION="$HERDR_LAB_SESSION" \
   PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" "$ROOT/bin/fm-herdr-session-cleanup.sh" \

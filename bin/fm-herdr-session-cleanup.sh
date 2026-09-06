@@ -13,8 +13,10 @@
 # "└ <concise-task> · p:<22-char-token>" grammar, one token occurrence across
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
-# the pane contains only one idle recognized shell with no child process. A
-# version 2 journal must also bind the exact workspace, tab, and pane.
+# the pane contains one idle recognized shell with no non-helper child process;
+# the verified v0.8.2 qterm helper-shell topology is the only child exception.
+# A version 2 journal must also
+# bind the exact workspace, tab, and pane.
 # Topology is first checked from one locked API snapshot, then every mutation
 # prerequisite is immediately rechecked before the existing exact-pane
 # focus-preserving close helper is called.
@@ -249,7 +251,7 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   pane=$FM_HERDR_CLEANUP_PANE
   if [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" != no-agent ] \
     || ! fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" >/dev/null; then
-    fm_herdr_cleanup_warn "$id preserved because its pane is not a provably idle childless shell"
+    fm_herdr_cleanup_warn "$id preserved because its pane is not a provably idle helper-only shell"
     fm_lock_release "$presentation_lock" || true
     fm_lock_release "$task_lock" || true
     return 0
