@@ -279,6 +279,38 @@ DUP_COUNT=$(lab workspace list 2>/dev/null | jq -r '[.result.workspaces[]? | sel
 [ "$DUP_COUNT" = 2 ] || fail "expected exactly two 'firstmate' workspaces, got $DUP_COUNT"
 WS_PRIMARY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_PRIMARY")
 
+# The launcher pane was just created by the second `make_workspace` above.
+# Herdr can return the pane id before the restored login shell is ready to
+# receive Enter; sending `pane run` into an unready pane leaves the command
+# in the input buffer and the spawned script never returns, so the marker
+# poll below times out after 4 minutes with "fm-spawn.sh never finished".
+# Block on the same public pane process-info predicate used by every other
+# real-herdr-gated suite in this family before the first fixed command
+# reaches the shell. The settle window (100 * 0.1s with 10 consecutive
+# stable samples) matches the readiness proofs in tests/fm-afk-inject-herdr-
+# e2e.test.sh and tests/fm-backend-herdr-smoke.test.sh.
+LAUNCHER_PANE_READY=false
+LAUNCHER_READY_SAMPLES=0
+for _ in $(seq 1 100); do
+  PROCESS_INFO=$(lab pane process-info --pane "$LAUNCH_DUP_PANE" 2>/dev/null || true)
+  if printf '%s' "$PROCESS_INFO" | jq -e '
+    .result.process_info as $process
+    | ($process.foreground_processes | length == 1)
+      and ($process.foreground_processes[0].pid == $process.shell_pid)
+  ' >/dev/null 2>&1; then
+    LAUNCHER_READY_SAMPLES=$((LAUNCHER_READY_SAMPLES + 1))
+    if [ "$LAUNCHER_READY_SAMPLES" -ge 10 ]; then
+      LAUNCHER_PANE_READY=true
+      break
+    fi
+  else
+    LAUNCHER_READY_SAMPLES=0
+  fi
+  sleep 0.1
+done
+[ "$LAUNCHER_PANE_READY" = true ] \
+  || fail "the launcher pane $LAUNCH_DUP_PANE did not become ready before the in-pane spawn attempt"
+
 cat > "$TMP_ROOT/spawn-in-pane.sh" <<SPAWN
 #!/usr/bin/env bash
 set -u
