@@ -2495,10 +2495,24 @@ elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
-    rm -f "$HERDR_PRESENTATION_JOURNAL"
+  # Informative diagnostic only: do not retire the journal here. The safety
+  # gate below (fm_backend_herdr_endpoint_confirmed_gone) is the single owner
+  # of "the exact pane is gone" for this teardown; retiring the journal on
+  # the agent-state probe alone would let a v0.8.2 pane that was reaped
+  # between the close attempt and the agent-state read (returning unknown)
+  # leave the journal behind even though the pane is in fact gone, and would
+  # also race a pane that turned out not to be actually gone. Wait for the
+  # safety gate to confirm a structured pane_not_found before removing the
+  # durable journal; it stays present and retryable on every ambiguous case.
+  pane_state=$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")
+  case "$pane_state" in
+    dead|unknown) HERDR_PRESENTATION_DEFERRED_RETIRE=1 ;;
+    *) HERDR_PRESENTATION_DEFERRED_RETIRE=0 ;;
+  esac
+  if [ "$HERDR_PRESENTATION_DEFERRED_RETIRE" -eq 1 ]; then
+    :  # journal stays in place until the safety gate confirms the pane gone
   else
-    echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+    echo "warning: exact herdr task-pane still appears live for $ID (state: $pane_state); retaining the presentation journal until a later teardown can confirm it gone" >&2
   fi
 elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
@@ -2519,6 +2533,15 @@ if [ "$BACKEND" = herdr ]; then
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
     echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
     exit 1
+  fi
+  # Safety gate confirmed the exact pane is gone: now retire the presentation
+  # journal if it was a candidate. Retiring only after a structured
+  # pane_not_found keeps the journal retryable through every close that did
+  # not actually remove the exact endpoint, including v0.8.2 pane reaps that
+  # report unknown on agent-state but are confirmed gone by pane get.
+  if [ "${HERDR_PRESENTATION_RETIRE_CANDIDATE:-0}" -eq 1 ] \
+     && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
+    rm -f "$HERDR_PRESENTATION_JOURNAL"
   fi
 fi
 if [ "$KIND" = secondmate ]; then
