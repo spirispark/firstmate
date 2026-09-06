@@ -842,6 +842,7 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   local session=$1 pane_id=$2 required_agent_state=${3:-}
   local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record
   FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=""
+  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   [ -n "$pane_id" ] || return 0
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
     echo "warning: herdr presentation cleanup could not capture exact active workspace and tab; refusing focus-unsafe pane close" >&2
@@ -911,6 +912,8 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   fi
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
+  elif [ -n "$target_ws" ]; then
+    FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
   fi
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
   if [ "$plan" = death ]; then
@@ -1199,7 +1202,11 @@ fm_backend_herdr_pid_is_qterm_login_child() {  # <ps-bin> <pid> <process-table-r
   local ps_bin=$1 pid=$2 rows=$3 comm args stat
   comm=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" comm) || return 1
   args=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" args) || return 1
-  [ "$comm" = "/bin/zsh" ] && [ "$args" = "/bin/zsh --login" ] || return 1
+  case "$comm" in
+    /bin/zsh|zsh) ;;
+    *) return 1 ;;
+  esac
+  [ "$args" = "/bin/zsh --login" ] || return 1
   stat=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" stat) || return 1
   case "$stat" in S*|I*|R*) ;; *) return 1 ;; esac
   printf '%s\n' "$rows" | awk -v helper="$pid" '

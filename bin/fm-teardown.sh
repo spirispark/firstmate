@@ -40,8 +40,9 @@
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
 # only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. It retires the non-authoritative journal only when a
-# read-only token correlation agrees with that endpoint and pane closure is
-# confirmed. Otherwise the journal stays quarantined for manual inspection.
+# read-only token correlation agrees with that endpoint and the focus-preserving
+# close helper confirms the pane removal and any emptied workspace removal.
+# Otherwise the journal stays quarantined for manual inspection.
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.
@@ -2449,6 +2450,7 @@ fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
+HERDR_PRESENTATION_CLOSE_REMOVAL_CONFIRMED=0
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_PANE=
 if [ "$BACKEND" = herdr ] \
@@ -2478,10 +2480,13 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     # close, an unconfirmed repositioned-workspace removal, or a failed exact
     # restore.
     # Swallowing them left a wrong active workspace with no operator-visible
-    # signal at all. The close stays non-fatal exactly as before: the presence
-    # gate below is what decides whether any durable record may be removed.
+    # signal at all.
+    FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
+    if [ "${FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED:-0}" = 1 ]; then
+      HERDR_PRESENTATION_CLOSE_REMOVAL_CONFIRMED=1
+    fi
   else
     echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
   fi
@@ -2495,15 +2500,10 @@ elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  # Informative diagnostic only: do not retire the journal here. The safety
-  # gate below (fm_backend_herdr_endpoint_confirmed_gone) is the single owner
-  # of "the exact pane is gone" for this teardown; retiring the journal on
-  # the agent-state probe alone would let a v0.8.2 pane that was reaped
-  # between the close attempt and the agent-state read (returning unknown)
-  # leave the journal behind even though the pane is in fact gone, and would
-  # also race a pane that turned out not to be actually gone. Wait for the
-  # safety gate to confirm a structured pane_not_found before removing the
-  # durable journal; it stays present and retryable on every ambiguous case.
+  # Informative diagnostic only: do not retire the journal here. Final removal
+  # below requires both the close helper's removal confirmation and a structured
+  # exact-pane not-found; the journal stays present and retryable on every
+  # ambiguous case.
   pane_state=$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")
   case "$pane_state" in
     dead|unknown) HERDR_PRESENTATION_DEFERRED_RETIRE=1 ;;
@@ -2518,14 +2518,17 @@ elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
 fi
-# A refused, skipped, or failed Herdr close must never erase a live task's
-# durable endpoint identity: unless the exact pane is confirmed gone, retain
-# every record and stop before any removal below so a later rerun can retry
-# the locked close. Only a structured not-found proves the pane gone; unknown
-# presence, missing or malformed endpoint identity, and missing confirmation
-# machinery all refuse.
+# A refused, skipped, or failed Herdr close must never erase a task's durable
+# endpoint identity. Presentation cleanup also requires the close helper's
+# removal confirmation so a pane-only not-found cannot hide an unresolved
+# workspace removal.
 if [ "$BACKEND" = herdr ]; then
   fm_backend_source herdr || true
+  if [ "${HERDR_PRESENTATION_RETIRE_CANDIDATE:-0}" -eq 1 ] \
+     && [ "${HERDR_PRESENTATION_CLOSE_REMOVAL_CONFIRMED:-0}" != 1 ]; then
+    echo "error: herdr pane $T for $ID was not fully removed by the focus-preserving close helper; retaining every durable task record - rerun teardown once the close can confirm workspace removal under the session lock" >&2
+    exit 1
+  fi
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
     echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
     exit 1
@@ -2534,11 +2537,8 @@ if [ "$BACKEND" = herdr ]; then
     echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
     exit 1
   fi
-  # Safety gate confirmed the exact pane is gone: now retire the presentation
-  # journal if it was a candidate. Retiring only after a structured
-  # pane_not_found keeps the journal retryable through every close that did
-  # not actually remove the exact endpoint, including v0.8.2 pane reaps that
-  # report unknown on agent-state but are confirmed gone by pane get.
+  # Both removal gates confirmed the exact endpoint gone: now retire the
+  # presentation journal if it was a candidate.
   if [ "${HERDR_PRESENTATION_RETIRE_CANDIDATE:-0}" -eq 1 ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"

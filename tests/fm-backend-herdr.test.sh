@@ -1857,7 +1857,7 @@ test_projection_close_stable_qterm_helper_child_uses_pane_death() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   cp "$resp/9.out" "$resp/13.out"
   cp "$resp/12.out" "$resp/14.out"
-  make_death_lab "$dir" "$bgpid" "$helper_pid" /bin/zsh "/bin/zsh --login" Rs+ \
+  make_death_lab "$dir" "$bgpid" "$helper_pid" zsh "/bin/zsh --login" Rs+ \
     "zsh (qterm)" "zsh (qterm)"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1867,10 +1867,10 @@ test_projection_close_stable_qterm_helper_child_uses_pane_death() {
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
   kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-  [ "$status" -eq 0 ] || fail "a stable qterm helper shell child should stay eligible for pane death: $out"
+  [ "$status" -eq 0 ] || fail "a stable qterm helper shell child should stay eligible for pane death with Linux comm: $out"
   assert_not_contains "$(cat "$log")" $'pane\x1fclose' "a stable qterm helper shell child forced the explicit close"
   assert_not_contains "$(cat "$log")" $'tab\x1ffocus' "focus moved despite the helper-child pane-death removal"
-  pass "herdr presentation cleanup: a stable qterm helper shell child stays on the pane-death path"
+  pass "herdr presentation cleanup: a stable qterm helper shell child with Linux comm stays on the pane-death path"
 }
 
 test_projection_close_generic_shell_child_stays_plain_close() {
@@ -1885,11 +1885,12 @@ test_projection_close_generic_shell_child_stays_plain_close() {
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  qterm_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
-  make_death_lab "$dir" "$bgpid" "$worker_pid" bash bash S
+  make_death_lab "$dir" "$bgpid" "$worker_pid" zsh zsh S \
+    "zsh (qterm)" "zsh (qterm)"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1897,11 +1898,11 @@ test_projection_close_generic_shell_child_stays_plain_close() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  [ "$status" -eq 0 ] || fail "a generic shell child should still fall back to the plain close: $out"
-  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a generic shell child did not use the plain close"
-  kill -0 "$bgpid" 2>/dev/null || fail "a generic shell child close signaled the pane shell"
+  [ "$status" -eq 0 ] || fail "a generic qterm shell child should still fall back to the plain close: $out"
+  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a generic qterm shell child did not use the plain close"
+  kill -0 "$bgpid" 2>/dev/null || fail "a generic qterm shell child close signaled the pane shell"
   kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-  pass "herdr presentation cleanup: a generic shell child stays on the plain-close fallback"
+  pass "herdr presentation cleanup: a generic qterm shell child stays on the plain-close fallback"
 }
 
 test_projection_close_death_escalates_sigkill_after_sighup_survival() {

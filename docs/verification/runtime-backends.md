@@ -396,9 +396,9 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-herdr-session-cleanup-e2e.test.sh
 ```
 
-Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
+Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane idle shell, either childless or with only the verified restored-qterm helper child, was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
-That lane was refreshed on 2026-09-07 against Herdr 0.8.2 protocol 20 through the pinned side-by-side installer. Restored panes whose process-info foreground shell is exactly `zsh (qterm)` and whose only direct child has `comm` `/bin/zsh`, `args` `/bin/zsh --login`, and no descendants are accepted; generic shell children and persistent non-helper children such as `gitstatusd`, `zsh-async`, and `direnv` still fail the proof and take the plain-close fallback.
+That lane was refreshed on 2026-09-07 against Herdr 0.8.2 protocol 20 through the pinned side-by-side installer. Restored panes whose process-info foreground shell is exactly `zsh (qterm)` and whose only direct child has `args` `/bin/zsh --login`, no descendants, and `comm` exactly `/bin/zsh` on BSD `ps` or `zsh` on Linux procps are accepted; generic shell children and persistent non-helper children such as `gitstatusd`, `zsh-async`, and `direnv` still fail the proof and take the plain-close fallback.
 
 ### Workspace-removal focus safety
 
@@ -514,7 +514,7 @@ Direct lab probes on 2026-07-28 established the removal rules the emptying-close
 - Ending a workspace's lone shell preserved the focused workspace exactly when the dying workspace sat behind it or the focused workspace was last, and moved focus to the focused workspace's right neighbor otherwise.
 - The production focus-preserving close in the dangerous geometry repositioned the doomed workspace, ended its proved shell, and left every concurrent focus sample on the exact anchor with no corrective `tab focus` issued.
 
-Three real-hardware conditions were required for the pane-death path to engage and are now encoded in the adapter and its unit fixtures: BSD `ps` reports a login shell's `comm` as `-zsh`, an idle shell transiently hosts a prompt helper (starship) as a second foreground process immediately after a `workspace.move` relayout, which the bounded settle window absorbs, and Herdr 0.8.2 restored panes report `zsh (qterm)` as the foreground shell while a single direct child remains `/bin/zsh --login`.
+Three real-hardware conditions were required for the pane-death path to engage and are now encoded in the adapter and its unit fixtures: BSD `ps` reports a login shell's `comm` as `-zsh`, an idle shell transiently hosts a prompt helper (starship) as a second foreground process immediately after a `workspace.move` relayout, which the bounded settle window absorbs, and Herdr 0.8.2 restored panes report `zsh (qterm)` as the foreground shell while a single direct child remains `/bin/zsh --login` with platform-specific `comm` `/bin/zsh` or `zsh`.
 
 The rules match the v0.7.5 tag source (`close_selected_workspace` reassigns focus from the closing workspace's index; `handle_pane_died` only clamps the stale focused index), and the upstream default branch resolves both paths by workspace id (PR #1877, commit `165dca45`, for the explicit close; PR #1912, commit `a979916`, for pane death), so the plan degrades to a harmless reorder-then-remove once a release carries them.
 

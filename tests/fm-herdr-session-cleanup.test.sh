@@ -34,6 +34,7 @@ cat > "$FAKE_PS" <<'SH'
 case "$*" in
   "-axo pid=,ppid=") printf '1 0\n67 1\n' ;;
   "-p 67 -o stat=") printf 'Ss\n' ;;
+  "-p 67 -o comm=") printf 'sh\n' ;;
   *) exit 1 ;;
 esac
 SH
@@ -187,10 +188,17 @@ fm_backend_herdr_cli() {
 }
 
 fm_backend_herdr_projection_close_pane_focus_preserving() {
+  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   [ ! -e "$FIXTURE_DIR/focus-refuse" ] || return 1
+  [ ! -e "$FIXTURE_DIR/close-unconfirmed" ] || {
+    printf '%s\n' "$*" >> "$CLOSE_LOG"
+    : > "$FIXTURE_DIR/closed"
+    return 1
+  }
   [ "${3:-}" = no-agent ] || return 1
   printf '%s\n' "$*" >> "$CLOSE_LOG"
   : > "$FIXTURE_DIR/closed"
+  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
 }
 
 write_v1() { # <id> [token]
@@ -281,6 +289,14 @@ reset_fixture; : > "$FIXTURE_DIR/error-workspace-get"; assert_preserved "unreada
 reset_fixture; : > "$FIXTURE_DIR/race"; assert_preserved "revalidation race"
 reset_fixture; printf '%s\n' "$TAB" > "$FIXTURE_DIR/active-tab"; assert_preserved "active target"
 reset_fixture; : > "$FIXTURE_DIR/focus-refuse"; assert_preserved "focus refusal"
+reset_fixture
+: > "$FIXTURE_DIR/close-unconfirmed"
+fm_herdr_session_cleanup >/dev/null 2>&1
+[ -e "$FM_STATE_OVERRIDE/$ID.herdr-presentation" ] \
+  || fail "dead pane with unconfirmed workspace removal retired the journal"
+[ "$(wc -l < "$CLOSE_LOG" | tr -d ' ')" = 1 ] \
+  || fail "dead pane with unconfirmed workspace removal did not exercise one close attempt"
+pass "dead panes keep journals when workspace removal is unconfirmed"
 
 INTEGRATION_ROOT="$TMP_ROOT/bootstrap-integration"
 mkdir -p "$INTEGRATION_ROOT/home/state" "$INTEGRATION_ROOT/home/data" "$INTEGRATION_ROOT/home/config"

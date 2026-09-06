@@ -1901,6 +1901,10 @@ case "${1:-} ${2:-}" in
     printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}'
     ;;
   "pane close")
+    if [ "${FM_FAKE_HERDR_CLOSE_REMOVAL_UNCONFIRMED:-0}" = 1 ]; then
+      : > "${FM_FAKE_HERDR_CLOSED:?}"
+      exit 1
+    fi
     if [ "${FM_FAKE_HERDR_CLOSE_FAIL:-0}" = 1 ]; then
       exit 1
     fi
@@ -1911,12 +1915,16 @@ case "${1:-} ${2:-}" in
       if [ "${FM_FAKE_HERDR_PRESENCE_UNKNOWN:-0}" = 1 ]; then
         printf '%s\n' '{"error":{"code":"internal"}}' >&2
         exit 1
-      fi
-      printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
-      exit 1
     fi
-    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}'
-    ;;
+    printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+    exit 1
+  fi
+  if [ "${FM_FAKE_HERDR_OMIT_PANE_WORKSPACE:-0}" = 1 ]; then
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2"}}}'
+    exit 0
+  fi
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2","tab_id":"w1:t2","workspace_id":"w1"}}}'
+  ;;
   "tab get")
     printf '%s\n' '{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"}}}'
     ;;
@@ -1973,13 +1981,59 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
     || fail "unconfirmed task-pane close incorrectly retired the presentation journal"
   [ -e "$case_dir/state/task-x1.meta" ] \
     || fail "unconfirmed task-pane close erased the durable endpoint metadata"
-  assert_grep "close could not be confirmed" "$case_dir/stderr" \
-    "unconfirmed projected close did not explain why the journal was retained"
-  assert_grep "not confirmed gone" "$case_dir/stderr" \
+  assert_grep "not fully removed" "$case_dir/stderr" \
     "unconfirmed projected close did not explain why the records were retained"
   assert_not_contains "$(cat "$log")" "workspace close" \
     "unconfirmed projected close must not escalate to workspace cleanup"
   pass "herdr projection teardown retains every record when post-close presence is unknown"
+}
+
+test_herdr_projection_teardown_retains_records_when_close_helper_fails_after_pane_disappears() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-helper-failure-after-pane-gone)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_CLOSE_REMOVAL_UNCONFIRMED=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-projection-helper-failure-after-pane-gone: teardown reported success after close helper failure"
+  [ -e "$closed" ] \
+    || fail "herdr-projection-helper-failure-after-pane-gone: fixture did not remove the pane"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "close helper failure incorrectly retired the presentation journal"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "close helper failure erased the durable endpoint metadata"
+  assert_grep "not fully removed" "$case_dir/stderr" \
+    "close helper failure did not explain why records were retained"
+  pass "herdr projection teardown retains records when close helper fails after pane disappearance"
+}
+
+test_herdr_projection_teardown_retains_records_without_workspace_identity() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-missing-workspace-identity)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_OMIT_PANE_WORKSPACE=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-projection-missing-workspace-identity: teardown reported success without workspace identity"
+  [ -e "$closed" ] \
+    || fail "herdr-projection-missing-workspace-identity: fixture did not close the pane"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "missing workspace identity incorrectly retired the presentation journal"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "missing workspace identity erased the durable endpoint metadata"
+  assert_grep "not fully removed" "$case_dir/stderr" \
+    "missing workspace identity did not explain why records were retained"
+  pass "herdr projection teardown retains records without close-helper workspace identity"
 }
 
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup() {
@@ -2610,6 +2664,8 @@ test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
+test_herdr_projection_teardown_retains_records_when_close_helper_fails_after_pane_disappears
+test_herdr_projection_teardown_retains_records_without_workspace_identity
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
