@@ -3545,14 +3545,9 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   dir="$TMP_ROOT/submit-preexisting-working-swallow"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   # 1: send-text
   # 2: agent get - pre-Enter baseline is working, so the composer branch runs
-  # 3: pane read - the RENDERED footer baseline is still idle because the
-  #    pre-existing turn has not rendered its token yet
-  # 4: send-keys enter; 5: pane read - the composer still holds the message
-  # 6: pane read - the pre-existing turn's footer has become busy
+  # 3: send-keys enter; 4: pane read - the composer still holds the message
   printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/2.out"
-  printf '  ready\n' > "$resp/3.out"
-  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/5.out"
-  printf '  thinking... esc to interrupt\n' > "$resp/6.out"
+  printf '  \xe2\x9d\xaf hello captain\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
@@ -3560,7 +3555,7 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "preexisting-working swallowed Enter should use the configured retry count, sent $enter_count Enter(s)"
   read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
-  [ "$read_count" -eq 2 ] || fail "preexisting-working confirmation should read one footer baseline and one composer verdict without accepting the later busy footer, made $read_count read(s)"
+  [ "$read_count" -eq 1 ] || fail "preexisting-working confirmation should only read the composer verdict, made $read_count read(s)"
   pass "fm_backend_herdr_send_text_submit: preexisting working is not accepted as submit proof when the composer still holds the message"
 }
 
@@ -3634,16 +3629,17 @@ test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
   # 1: send-text
   # 2: agent get - cursor is `blocked` even while idle, so the native
   #    idle-baseline path is unreachable and the composer branch runs
-  # 3: pane read - rendered footer baseline: no busy token, so the pane was NOT
+  # 3-4: pane read - rendered footer baseline: no busy token, so the pane was NOT
   #    mid-turn before our Enter
-  # 4: send-keys enter
-  # 5: pane read - composer content mid-turn: placeholder plus busy token
-  # 6: pane read - rendered footer now busy: an idle-to-busy transition ACROSS
+  # 5: send-keys enter
+  # 6: pane read - composer content mid-turn: placeholder plus busy token
+  # 7: pane read - rendered footer now busy: an idle-to-busy transition ACROSS
   #    our Enter, which is the submission proof
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
   herdr_cursor_idle_plain > "$resp/3.out"
-  herdr_cursor_midturn_ansi > "$resp/5.out"
-  herdr_cursor_midturn_plain > "$resp/6.out"
+  herdr_cursor_idle_plain > "$resp/4.out"
+  herdr_cursor_midturn_ansi > "$resp/6.out"
+  herdr_cursor_midturn_plain > "$resp/7.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 3 0.01 0.01' "$ROOT" )
@@ -3651,6 +3647,25 @@ test_send_text_submit_confirms_never_idle_native_state_via_footer_transition() {
   enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
   [ "$enter_count" -eq 1 ] || fail "a confirmed submit must not send a needless extra Enter, sent $enter_count Enter(s)"
   pass "fm_backend_herdr_send_text_submit: a rendered-footer idle-to-busy transition confirms delivery when native agent-state never reports idle"
+}
+
+test_send_text_submit_blocked_baseline_rechecks_footer_before_confirming() {
+  local dir log resp fb out enter_count read_count
+  dir="$TMP_ROOT/submit-cursor-delayed-preexisting-turn"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
+  herdr_cursor_idle_plain > "$resp/3.out"
+  herdr_cursor_midturn_plain > "$resp/4.out"
+  herdr_cursor_midturn_ansi > "$resp/5.out"
+  herdr_cursor_midturn_ansi > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 1 0.01 0.01' "$ROOT" )
+  [ "$out" = pending ] || fail "a blocked native baseline with a delayed pre-existing busy footer must not confirm a swallowed Enter, got '$out'"
+  enter_count=$(grep -c $'\x1f''pane'$'\x1f''send-keys'$'\x1f''w1:p2'$'\x1f''enter' "$log")
+  [ "$enter_count" -eq 1 ] || fail "ambiguous blocked-baseline retry count changed, sent $enter_count Enter(s)"
+  read_count=$(grep -c $'\x1f''pane'$'\x1f''read' "$log")
+  [ "$read_count" -eq 3 ] || fail "blocked-baseline confirmation should recheck the footer before Enter and then read the composer, made $read_count read(s)"
+  pass "fm_backend_herdr_send_text_submit: blocked native baselines need stable rendered-idle proof before footer-transition confirmation"
 }
 
 test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition() {
@@ -3662,7 +3677,8 @@ test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
   printf '{"result":{"agent":{"agent_status":"blocked"}}}\n' > "$resp/2.out"
   herdr_cursor_midturn_plain > "$resp/3.out"
   herdr_cursor_midturn_ansi > "$resp/5.out"
-  herdr_cursor_midturn_ansi > "$resp/7.out"
+  herdr_cursor_midturn_plain > "$resp/6.out"
+  herdr_cursor_midturn_ansi > "$resp/8.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "hello captain" 2 0.01 0.01' "$ROOT" )
@@ -4518,6 +4534,7 @@ test_send_text_submit_preexisting_working_does_not_false_confirm_swallowed_enter
 test_composer_state_cursor_midturn_row_reads_pending
 test_rendered_busy_state_reads_the_cursor_busy_token
 test_send_text_submit_confirms_never_idle_native_state_via_footer_transition
+test_send_text_submit_blocked_baseline_rechecks_footer_before_confirming
 test_send_text_submit_never_idle_native_state_keeps_pending_without_a_transition
 test_send_text_submit_confirms_despite_codex_idle_tip_composer
 test_composer_state_codex_dynamic_idle_tip_reads_empty_when_faint
