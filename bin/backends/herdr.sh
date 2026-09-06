@@ -1179,18 +1179,23 @@ fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
 }
 
 # fm_backend_herdr_pane_idle_shell_pid: print the shell pid of <pane-id> only
-# when the exact pane provably holds one lone idle recognized shell: pane
-# process-info agrees on the pane id, the shell pid is both the foreground
-# process group and the sole foreground process, the foreground process name
-# and argv0 resolve to the same recognized shell, the operating-system
-# process table shows exactly that one shell row with no child process, and
+# when the exact pane provably holds one idle recognized shell as its
+# foreground: pane process-info agrees on the pane id, the shell pid is both
+# the foreground process group and the sole foreground process, the
+# foreground process name and argv0 resolve to the same recognized shell, and
 # the shell sits in a sleeping or idle state.
-# An idle interactive shell transiently hosts short-lived prompt helpers
-# (verified on the real 0.7.5 lab: a workspace.move relayout makes zsh redraw
-# its prompt, spawning starship as a second foreground process for a few
-# samples), so the proof retries strict single samples for a bounded settle
-# window and succeeds on the first fully clean one; a genuinely busy pane
-# fails every sample and still refuses.
+# v0.8.2 restores a session's laid-out shells as zsh with a stable idle
+# qterm helper child (verified empirically on the side-by-side v0.8.2 lab:
+# the helper is always a recognized shell, always sleeping, never carries
+# the foreground); the previous v0.7.5 requirement that the shell row be
+# entirely childless refused every restored pane even when the helper was
+# benign. The foreground-contract checks above are sufficient: any children
+# the shell hosts are, by definition, background descendants, cannot take
+# TTY input from the shell, and are reaped when the shell is signaled in
+# the pane-death close path. The remaining foreground churn from transient
+# prompt helpers (workspace.move relayout spawning starship for a few
+# samples, verified on the real 0.7.5 lab) is still handled by the bounded
+# settle retry below: a genuinely busy pane fails every sample and refuses.
 # This is the single owner of the idle-shell proof; the session-start
 # projection cleanup and every pane-death close path both rely on it.
 fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
@@ -1243,10 +1248,14 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
   rows=$("$ps_bin" -axo pid=,ppid= 2>/dev/null) || return 1
+  # The shell pid row must exist in the OS process table; any child rows
+  # (e.g. a stable idle qterm helper under v0.8.2 restored panes) are
+  # background descendants whose presence does not change the foreground
+  # contract and does not authorize any non-shell process to receive TTY
+  # input. See fm_backend_herdr_pane_idle_shell_pid above.
   printf '%s\n' "$rows" | awk -v shell="$shell_pid" '
     $1 == shell { found++ }
-    $2 == shell { child++ }
-    END { exit(found == 1 && child == 0 ? 0 : 1) }
+    END { exit(found == 1 ? 0 : 1) }
   ' || return 1
   stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
   case "$stat" in S*|I*) ;; *) return 1 ;; esac
