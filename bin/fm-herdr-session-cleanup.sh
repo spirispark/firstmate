@@ -14,8 +14,8 @@
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
 # the pane contains one idle recognized shell with no non-helper child process;
-# the verified v0.8.2 qterm helper-shell topology is the only child exception.
-# A version 2 journal must also
+# the verified v0.8.2 `zsh (qterm)` plus `/bin/zsh --login` topology is the
+# only child exception. A version 2 journal must also
 # bind the exact workspace, tab, and pane.
 # Topology is first checked from one locked API snapshot, then every mutation
 # prerequisite is immediately rechecked before the existing exact-pane

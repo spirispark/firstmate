@@ -940,11 +940,11 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 # persists.
 # That reasoning covers the pane-death route only. The plan's plain-close
 # FALLBACK is reachable exactly when the doomed pane's shell cannot be proved
-# idle with either no children or only the verified v0.8.2 helper-shell child
-# shape - a persistent gitstatusd, zsh-async worker, or direnv fails that proof
-# permanently - and on a release without both fixes the fallback is the
-# focus-stealing close itself, so the mitigation is conditional rather than
-# unconditional and a version gate IS required. Default-on
+# idle with either no children or only the verified v0.8.2 `zsh (qterm)` plus
+# `/bin/zsh --login` child shape - a persistent gitstatusd, zsh-async worker,
+# or direnv fails that proof permanently - and on a release without both fixes
+# the fallback is the focus-stealing close itself, so the mitigation is
+# conditional rather than unconditional and a version gate IS required. Default-on
 # projection is therefore floored at FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION,
 # where every removal primitive preserves focus and the proof stops being
 # load-bearing. That floor has ONE owner, the spawn-time gate
@@ -1140,7 +1140,7 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   esac
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
   max_attempts=${FM_BACKEND_HERDR_DEATH_CLOSE_POLLS:-40}
-  fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$shell_pid" || return 1
+  fm_backend_herdr_pid_is_signalable_shell "$ps_bin" "$shell_pid" || return 1
   kill -HUP "$shell_pid" 2>/dev/null || true
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
@@ -1154,7 +1154,7 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   # that exited and was reused by an unrelated process is never signaled.
   resampled_pid=$(fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id") || return 1
   [ "$resampled_pid" = "$shell_pid" ] || return 1
-  fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$shell_pid" || return 1
+  fm_backend_herdr_pid_is_signalable_shell "$ps_bin" "$shell_pid" || return 1
   kill -KILL "$shell_pid" 2>/dev/null || true
   attempt=0
   while [ "$attempt" -lt "$max_attempts" ]; do
@@ -1166,43 +1166,60 @@ fm_backend_herdr_death_close_pane() {  # <session> <pane-id> <shell-pid>
   return 1
 }
 
+fm_backend_herdr_pid_field() {  # <ps-bin> <pid> <field>
+  "$1" -p "$2" -o "$3=" 2>/dev/null | awk 'NR == 1 { $1=$1; print; exit }'
+}
+
 # fm_backend_herdr_pid_is_bare_shell: <pid> currently resolves to a bare
 # recognized shell process per <ps-bin>.
 # BSD ps reports comm as argv0, so a login shell arrives as "-zsh"; strip the
 # login dash exactly like the idle-shell proof's argv0 normalization.
 fm_backend_herdr_pid_is_bare_shell() {  # <ps-bin> <pid>
   local comm
-  comm=$("$1" -p "$2" -o comm= 2>/dev/null) || return 1
-  comm=$(printf '%s' "$comm" | tr -d '[:space:]')
+  comm=$(fm_backend_herdr_pid_field "$1" "$2" comm) || return 1
   comm=${comm#-}
   comm=${comm##*/}
   case "$comm" in sh|bash|zsh|dash|ksh|fish) return 0 ;; esac
   return 1
 }
 
-fm_backend_herdr_pid_argv_is_bare_shell() {  # <ps-bin> <pid>
-  local args shell_arg shell_name
-  args=$("$1" -p "$2" -o args= 2>/dev/null) || return 1
-  args=$(printf '%s\n' "$args" | awk 'NR == 1 { $1=$1; print; exit }')
-  [ -n "$args" ] || return 1
-  case "$args" in *[[:space:]]*) return 1 ;; esac
-  shell_arg=$args
-  shell_name=${shell_arg#-}
-  shell_name=${shell_name##*/}
-  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) return 0 ;; esac
-  return 1
+fm_backend_herdr_pid_is_qterm_shell() {  # <ps-bin> <pid>
+  local comm args
+  comm=$(fm_backend_herdr_pid_field "$1" "$2" comm) || return 1
+  args=$(fm_backend_herdr_pid_field "$1" "$2" args) || return 1
+  [ "$comm" = "zsh (qterm)" ] && [ "$args" = "zsh (qterm)" ]
 }
 
-fm_backend_herdr_pid_is_idle_helper_shell() {  # <ps-bin> <pid> <process-table-rows>
-  local ps_bin=$1 pid=$2 rows=$3 stat
-  fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$pid" || return 1
-  fm_backend_herdr_pid_argv_is_bare_shell "$ps_bin" "$pid" || return 1
-  stat=$("$ps_bin" -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
-  case "$stat" in S*|I*) ;; *) return 1 ;; esac
+fm_backend_herdr_pid_is_signalable_shell() {  # <ps-bin> <pid>
+  fm_backend_herdr_pid_is_bare_shell "$1" "$2" \
+    || fm_backend_herdr_pid_is_qterm_shell "$1" "$2"
+}
+
+fm_backend_herdr_pid_is_qterm_login_child() {  # <ps-bin> <pid> <process-table-rows>
+  local ps_bin=$1 pid=$2 rows=$3 comm args stat
+  comm=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" comm) || return 1
+  args=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" args) || return 1
+  [ "$comm" = "/bin/zsh" ] && [ "$args" = "/bin/zsh --login" ] || return 1
+  stat=$(fm_backend_herdr_pid_field "$ps_bin" "$pid" stat) || return 1
+  case "$stat" in S*|I*|R*) ;; *) return 1 ;; esac
   printf '%s\n' "$rows" | awk -v helper="$pid" '
     $2 == helper { child++ }
     END { exit(child == 0 ? 0 : 1) }
   '
+}
+
+fm_backend_herdr_process_info_shell_kind() {  # <name> <argv0>
+  local name=$1 argv0=$2 shell_name
+  if [ "$name" = "zsh (qterm)" ] && [ "$argv0" = "zsh (qterm)" ]; then
+    printf qterm
+    return 0
+  fi
+  shell_name=${name##*/}
+  argv0=${argv0#-}
+  argv0=${argv0##*/}
+  [ "$argv0" = "$shell_name" ] || return 1
+  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) printf bare; return 0 ;; esac
+  return 1
 }
 
 # fm_backend_herdr_pane_idle_shell_pid: print the shell pid of <pane-id> only
@@ -1212,14 +1229,14 @@ fm_backend_herdr_pid_is_idle_helper_shell() {  # <ps-bin> <pid> <process-table-r
 # foreground process name and argv0 resolve to the same recognized shell, and
 # the shell sits in a sleeping or idle state.
 # v0.8.2 restores a session's laid-out shells as zsh with a stable idle
-# qterm helper child: a direct, childless, sleeping helper whose OS command is
-# the same bare shell shape. The previous v0.7.5 requirement that the shell row
-# be entirely childless refused every restored pane even when that helper was
-# benign, but every other descendant still fails the proof. The remaining
-# foreground churn from transient prompt helpers (workspace.move relayout
-# spawning starship for a few samples, verified on the real 0.7.5 lab) is still
-# handled by the bounded settle retry below: a genuinely busy pane fails every
-# sample and refuses.
+# qterm topology: the pane shell is exactly "zsh (qterm)" and the only direct
+# child is a childless "/bin/zsh --login". The previous v0.7.5 requirement that
+# the shell row be entirely childless refused every restored pane even when
+# that helper was benign, but every other descendant still fails the proof. The
+# remaining foreground churn from transient prompt helpers (workspace.move
+# relayout spawning starship for a few samples, verified on the real 0.7.5 lab)
+# is still handled by the bounded settle retry below: a genuinely busy pane
+# fails every sample and refuses.
 # This is the single owner of the idle-shell proof; the session-start
 # projection cleanup and every pane-death close path both rely on it.
 fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
@@ -1239,7 +1256,7 @@ fm_backend_herdr_pane_idle_shell_pid() {  # <session> <pane-id>
 # contract and the settle retry.
 fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid foreground_pgid count
-  local process_pid name argv0 shell_name rows stat ps_bin children child_pid
+  local process_pid name argv0 shell_kind rows stat ps_bin children child_pid child_count
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -1263,11 +1280,7 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
     | ($process.argv0 // $process.argv[0])
     | select(type == "string" and length > 0)
   ' 2>/dev/null) || return 1
-  shell_name=${name##*/}
-  argv0=${argv0#-}
-  argv0=${argv0##*/}
-  [ "$argv0" = "$shell_name" ] || return 1
-  case "$shell_name" in sh|bash|zsh|dash|ksh|fish) ;; *) return 1 ;; esac
+  shell_kind=$(fm_backend_herdr_process_info_shell_kind "$name" "$argv0") || return 1
 
   ps_bin=${FM_HERDR_PS_BIN:-ps}
   command -v "$ps_bin" >/dev/null 2>&1 || return 1
@@ -1277,13 +1290,20 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
     $2 == shell { print $1 }
     END { exit(found == 1 ? 0 : 1) }
   ') || return 1
+  child_count=$(printf '%s\n' "$children" | awk 'NF { n++ } END { print n+0 }')
+  case "$shell_kind:$child_count" in
+    bare:0) fm_backend_herdr_pid_is_bare_shell "$ps_bin" "$shell_pid" || return 1 ;;
+    qterm:1) fm_backend_herdr_pid_is_qterm_shell "$ps_bin" "$shell_pid" || return 1 ;;
+    *) return 1 ;;
+  esac
   for child_pid in $children; do
     case "$child_pid" in ''|*[!0-9]*) return 1 ;; esac
     [ "$child_pid" != "$shell_pid" ] || return 1
     [ "$child_pid" -gt 1 ] || return 1
-    fm_backend_herdr_pid_is_idle_helper_shell "$ps_bin" "$child_pid" "$rows" || return 1
+    [ "$shell_kind" = qterm ] || return 1
+    fm_backend_herdr_pid_is_qterm_login_child "$ps_bin" "$child_pid" "$rows" || return 1
   done
-  stat=$("$ps_bin" -p "$shell_pid" -o stat= 2>/dev/null | tr -d '[:space:]') || return 1
+  stat=$(fm_backend_herdr_pid_field "$ps_bin" "$shell_pid" stat) || return 1
   case "$stat" in S*|I*) ;; *) return 1 ;; esac
   printf '%s\n' "$shell_pid"
 }

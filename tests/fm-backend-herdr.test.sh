@@ -1444,19 +1444,21 @@ test_projection_close_rechecks_required_agent_state_at_boundary() {
 # while a pane-death removal preserves focus whenever the dying workspace
 # sits behind the focused one (or the focused one is last).
 
-# make_death_lab <dir> <shell-pid> [child-pid child-comm child-args child-stat]:
+# make_death_lab <dir> <shell-pid> [child-pid child-comm child-args child-stat shell-comm shell-args]:
 # a fake ps and a fake workspace mover for the pane-death close fixtures. The
 # mover appends to $FM_FAKE_MOVER_LOG and exits 9 unless
 # $FM_FAKE_MOVER_RESPONSE names a readable response file.
-make_death_lab() {  # <dir> <shell-pid> [child-pid child-comm child-args child-stat]
+make_death_lab() {  # <dir> <shell-pid> [child-pid child-comm child-args child-stat shell-comm shell-args]
   local dir=$1 pid=$2 child_pid=${3:-} child_comm=${4:-} child_args=${5:-} child_stat=${6:-S}
+  local shell_comm=${7:--zsh} shell_args=${8:--zsh}
   mkdir -p "$dir"
   cat > "$dir/ps" <<SH
 #!/usr/bin/env bash
 case "\$*" in
   "-axo pid=,ppid=") printf '1 0\n$pid 1\n${child_pid:+$child_pid $pid\\n}' ;;
   "-p $pid -o stat=") printf 'Ss+\n' ;;
-  "-p $pid -o comm=") printf -- '-zsh\n' ;;
+  "-p $pid -o comm=") printf '%s\n' '$shell_comm' ;;
+  "-p $pid -o args=") printf '%s\n' '$shell_args' ;;
   "-p $child_pid -o stat=") printf '%s\n' '$child_stat' ;;
   "-p $child_pid -o comm=") printf '%s\n' '$child_comm' ;;
   "-p $child_pid -o args=") printf '%s\n' '$child_args' ;;
@@ -1483,6 +1485,10 @@ SH
 
 death_process_info_fixture() {  # <pane> <pid>
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"}]}}}\n' "$1" "$2" "$2" "$2"
+}
+
+qterm_process_info_fixture() {  # <pane> <pid>
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh (qterm)","argv0":"zsh (qterm)","cmdline":"zsh (qterm)"}]}}}\n' "$1" "$2" "$2" "$2"
 }
 
 test_projection_close_emptying_after_focus_uses_pane_death_without_move() {
@@ -1843,7 +1849,7 @@ test_projection_close_stable_qterm_helper_child_uses_pane_death() {
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
   cp "$resp/1.out" "$resp/6.out"
   sleep 300 & bgpid=$!
-  death_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  qterm_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
   cp "$resp/9.out" "$resp/10.out"
@@ -1851,7 +1857,8 @@ test_projection_close_stable_qterm_helper_child_uses_pane_death() {
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   cp "$resp/9.out" "$resp/13.out"
   cp "$resp/12.out" "$resp/14.out"
-  make_death_lab "$dir" "$bgpid" "$helper_pid" zsh -zsh S
+  make_death_lab "$dir" "$bgpid" "$helper_pid" /bin/zsh "/bin/zsh --login" Rs+ \
+    "zsh (qterm)" "zsh (qterm)"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1866,9 +1873,9 @@ test_projection_close_stable_qterm_helper_child_uses_pane_death() {
   pass "herdr presentation cleanup: a stable qterm helper shell child stays on the pane-death path"
 }
 
-test_projection_close_persistent_non_helper_child_stays_plain_close() {
+test_projection_close_generic_shell_child_stays_plain_close() {
   local dir log resp fb out status bgpid worker_pid
-  dir="$TMP_ROOT/close-non-helper-child"; mkdir -p "$dir/responses"
+  dir="$TMP_ROOT/close-generic-shell-child"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   worker_pid=98992
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
@@ -1882,7 +1889,7 @@ test_projection_close_persistent_non_helper_child_stays_plain_close() {
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
-  make_death_lab "$dir" "$bgpid" "$worker_pid" zsh "zsh -f /tmp/zsh-async" S
+  make_death_lab "$dir" "$bgpid" "$worker_pid" bash bash S
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
@@ -1890,11 +1897,11 @@ test_projection_close_persistent_non_helper_child_stays_plain_close() {
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
   status=$?
-  [ "$status" -eq 0 ] || fail "a persistent non-helper child should still fall back to the plain close: $out"
-  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a persistent non-helper child did not use the plain close"
-  kill -0 "$bgpid" 2>/dev/null || fail "a persistent non-helper child close signaled the pane shell"
+  [ "$status" -eq 0 ] || fail "a generic shell child should still fall back to the plain close: $out"
+  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "a generic shell child did not use the plain close"
+  kill -0 "$bgpid" 2>/dev/null || fail "a generic shell child close signaled the pane shell"
   kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
-  pass "herdr presentation cleanup: a persistent non-helper child stays on the plain-close fallback"
+  pass "herdr presentation cleanup: a generic shell child stays on the plain-close fallback"
 }
 
 test_projection_close_death_escalates_sigkill_after_sighup_survival() {
@@ -4486,7 +4493,7 @@ test_projection_close_move_failure_falls_back_to_plain_close
 test_projection_close_busy_pane_falls_back_to_plain_close
 test_projection_close_transient_prompt_helper_settles_then_uses_pane_death
 test_projection_close_stable_qterm_helper_child_uses_pane_death
-test_projection_close_persistent_non_helper_child_stays_plain_close
+test_projection_close_generic_shell_child_stays_plain_close
 test_projection_close_death_escalates_sigkill_after_sighup_survival
 test_projection_close_death_failure_falls_back_to_plain_close
 test_projection_close_death_still_restores_a_stolen_focus
