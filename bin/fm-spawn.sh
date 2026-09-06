@@ -2157,6 +2157,47 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 
+# spawn_herdr_pane_wait_ready: confirm a freshly created Herdr pane's restored
+# login shell actually owns the foreground before the spawn handoff sends its
+# first fixed command. A herdr pane id can come back from tab create before
+# the pane's interactive shell is ready to receive Enter; sending a fixed
+# command into an unready pane leaves the text in the input buffer without
+# execution and the existing 60s treehouse-get wait then degrades into a full
+# minute of polling with no worktree transition, surfacing as the misleading
+# "treehouse get did not enter a worktree within 60s" failure (reproduced in
+# CI on freshly installed Herdr servers while v0.8.2 named-lab panes settled
+# quickly enough that the same path appeared green locally). Poll the public
+# pane process-info predicate (single foreground process, pid == shell_pid)
+# used by the real-herdr e2e suites in this family, and require enough stable
+# samples so a transient shell re-exec or restored-login bounce cannot race
+# the readiness assertion. Always bounded - never raises or weakens the 60s
+# treehouse-get timeout below. Failures return 1 with a Herdr-specific
+# diagnostic and never silently fall through; the existing 60s wait would
+# still surface the same misleading timeout.
+spawn_herdr_pane_wait_ready() {  # <session> <pane_id>
+  local herdr_ses=$1 herdr_pane_id=$2
+  local max_samples=${FM_SPAWN_HERDR_READY_SAMPLES:-100}
+  local stable_required=${FM_SPAWN_HERDR_READY_STABLE:-10}
+  local interval=${FM_SPAWN_HERDR_READY_INTERVAL:-0.1}
+  local stable=0 i=0 process_info
+  for i in $(seq 1 "$max_samples"); do
+    process_info=$(fm_backend_herdr_cli "$herdr_ses" pane process-info --pane "$herdr_pane_id" 2>/dev/null || true)
+    if printf '%s' "$process_info" | jq -e '
+      .result.process_info as $process
+      | ($process.foreground_processes | length == 1)
+        and ($process.foreground_processes[0].pid == $process.shell_pid)
+    ' >/dev/null 2>&1; then
+      stable=$((stable + 1))
+      [ "$stable" -ge "$stable_required" ] && return 0
+    else
+      stable=0
+    fi
+    sleep "$interval"
+  done
+  echo "error: herdr pane ${herdr_ses}:${herdr_pane_id} did not become ready before the spawn handoff (waited ${max_samples} samples; the 60s treehouse-get wait would have masked this with the misleading 'treehouse get did not enter a worktree' error)" >&2
+  return 1
+}
+
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
@@ -2233,6 +2274,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  # Herdr's pane id can come back before its restored login shell is ready to
+  # receive Enter; sending treehouse get into an unready pane leaves the
+  # text in the input buffer without execution, surfacing later as a 60s
+  # treehouse-get wait that never sees a worktree transition. Block here on
+  # the public pane process-info predicate used by the real-herdr e2e
+  # suites, so the first fixed command below always reaches the shell.
+  if [ "$BACKEND" = herdr ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SES:-}" ]; then
+    spawn_herdr_pane_wait_ready "$HERDR_SES" "$HERDR_PANE_ID" || exit 1
+  fi
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
