@@ -793,8 +793,7 @@ An unstyled capture has no ghost-strip proof and correctly stays `unknown`.
 With the composer on row 12 (zero-based), `#{cursor_y}` reported 17 both when idle and with real text typed, and `#{cursor_flag}` reported 0.
 The tmux composer verdict for a cursor pane is therefore `unknown` in every state, and tmux submission is acknowledged from the busy transition instead.
 On the cursorless backends, styled captures from Herdr and Zellij can prove the reverse-video placeholder empty, while cmux and Orca declare `styled=0` and therefore correctly return `unknown` for Cursor's bare placeholder row rather than risk a false `empty`.
-Herdr later grew its own pre-typing footer baseline and confirms delivery through it (see [Herdr backend](#herdr-backend) below).
-The shared cursorless submit core still claims no busy-transition fallback, so delivery on Zellij, cmux, and Orca can remain unconfirmed even though Cursor's recorded worker state remains backend-agnostic through the transcript fold.
+Herdr, Zellij, cmux, and Orca keep Cursor delivery unconfirmed when native idle ownership proof is unavailable; Cursor's recorded worker state remains backend-agnostic through the transcript fold.
 Claude and Codex were checked in the same run and are unaffected: their settled composers report `cursor_flag=1` and classify `empty`.
 
 ### Busy state
@@ -861,7 +860,7 @@ Before those were taught to the shared edge detector, a bare composer's wrap reg
 Measured as an A/B on the same live pane, the pre-fix classifier returned `pending` and the current one returned `empty`.
 
 The idle fix alone did not confirm delivery, because the composer branch reads the mid-turn row instead.
-With the rendered-footer transition in place, `bin/fm-send.sh` exited 0 and the steer executed in the pane; the same send previously exited 1 with `delivery unconfirmed; verdict=pending` on a message that had actually landed.
+A rendered-footer transition on Herdr is not submit ownership proof for Cursor while `agent get` reports `blocked` in every state, so this adapter reports the same `delivery unconfirmed; verdict=pending` failure mode rather than risk silently clearing an undelivered steer.
 
 The rest of the lifecycle was driven end to end on that worker:
 
@@ -874,9 +873,9 @@ The rest of the lifecycle was driven end to end on that worker:
 Other harnesses on Herdr are unaffected by the edge-detector change.
 All seven live panes of the running default session - one Pi, four Claude, two plain shells - classified identically under the pre-fix and current classifiers.
 
-**Delivery confirmation is verified on tmux and Herdr only.**
-Zellij, cmux, and Orca share a submit core that never consults the busy footer, so a Cursor steer there lands but `fm-send` reports delivery unconfirmed and exits non-zero.
-Teaching that shared core the same transition is deliberately separate work, because it changes the submit path for every harness on those three backends and needs its own live validation on each.
+**Delivery confirmation is verified on tmux only.**
+Herdr, Zellij, cmux, and Orca do not promote Cursor's rendered busy footer into submit confirmation without a native idle baseline, so a steer can land while `fm-send` reports delivery unconfirmed and exits non-zero.
+Teaching another adapter a safe ownership proof is deliberately separate work, because it changes its submit path and needs its own live validation.
 
 The portable regression is `tests/fm-cursor-harness.test.sh`, the composer captures are pinned in `tests/fm-composer-lib.test.sh`, and the Herdr submit and footer behavior is pinned in `tests/fm-backend-herdr.test.sh`.
 Refresh this harness-dependent proof before accepting a cursor upgrade:
