@@ -54,6 +54,10 @@ herdr_forget_inherited_pane
 # script can read it positionally and keep its calls isolated, matching the
 # pattern every other real-herdr-gated suite in this family uses.
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+case "$HERDR_LAB_HELPER" in
+  /*) ;;
+  *) HERDR_LAB_HELPER="$(pwd -P)/$HERDR_LAB_HELPER" ;;
+esac
 export HERDR_LAB_HELPER
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
