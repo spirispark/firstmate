@@ -46,6 +46,16 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 # as a cross-session parent identity (tests/herdr-test-safety.sh).
 herdr_forget_inherited_pane
 
+# The bare-composer supervisor loop shell inside the Herdr pane needs to call
+# the guarded lab helper for its native agent-state report (it does not pass
+# the inherited PATH-forwarded herdr binary directly, because in-pane login
+# shells can rebuild PATH and lose the side-by-side directory). Define
+# HERDR_LAB_HELPER here in the outer scope so the inner heredoc-style loop
+# script can read it positionally and keep its calls isolated, matching the
+# pattern every other real-herdr-gated suite in this family uses.
+HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+export HERDR_LAB_HELPER
+
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
