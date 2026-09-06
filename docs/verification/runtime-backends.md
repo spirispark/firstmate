@@ -208,7 +208,8 @@ Cursor is deliberately outside this empty-composer matrix because its terminal c
 ## Herdr
 
 The compatibility floor is protocol 14.
-The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+The active required CI lane pins Herdr 0.8.2 protocol 20 through `bin/fm-install-herdr.sh` on the self-hosted Linux ARM64 runner.
+Retained broad real-Herdr matrix evidence covers Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -438,7 +439,8 @@ The suite also cross-checks its own Part A measurement against the floor classif
 ### Presentation version floor
 
 Default-on presentation projection is floored at Herdr 0.8.0.
-The floor's structural signal is the selected running server's protocol number, falling back to the client protocol only when that selected session positively reports no running server, and the release mapping was measured on 2026-08-05 by running each pinned upstream macOS aarch64 release asset's own `status --json` through the guarded lab helper:
+The floor's structural signal is the selected running server's protocol number, falling back to the client protocol only when that selected session positively reports no running server.
+The release mapping was measured on 2026-08-05 by running each pinned upstream macOS aarch64 release asset's own `status --json` through the guarded lab helper, then refreshed for the required CI pin on 2026-09-07 by `bin/fm-install-herdr.sh`'s exact-version and minimum-protocol gates:
 
 | Release | Reported version | Protocol | Carries both upstream focus fixes | Floor verdict |
 |---|---|---|---|---|
@@ -449,9 +451,11 @@ The floor's structural signal is the selected running server's protocol number, 
 | preview-2026-07-29-44b3adb12552 | 0.7.5-preview.2026-07-29-44b3adb12552 | 18 | yes | below |
 | preview-2026-08-04-d78e3d3b5126 | 0.8.0-preview.2026-08-04-d78e3d3b5126 | 19 | yes | above |
 | v0.8.0 | 0.8.0 | 19 | yes | above |
+| v0.8.2 | 0.8.2 | 20 | yes | above |
 
 No build lacking both fixes reaches protocol 19, and every pre-fix build tops out at 17, so protocol 19 is a safe structural expression of the 0.8.0 floor.
 The one post-fix build below it is a preview that still reports a 0.7.5 version, so it is conservatively treated as below the floor, which costs a preview build its projection and never lets an unfixed build through.
+Protocol 20 is above the same floor and is the required CI pin.
 The 2026-08-05 named-lab cross-version probe started a server from Herdr 0.7.5 and queried it with the installed 0.8.0 client; status reported client version 0.8.0 protocol 19, server version 0.7.5 protocol 17, server running true, and server compatible false.
 That ordinary post-upgrade shape proves the running server owns the focus behavior, so the unconfigured default composes client and selected-server verdicts conservatively and rechecks after server ensure before publishing a journal or creating a workspace.
 
@@ -469,13 +473,30 @@ tests/fm-backend-herdr.test.sh
 
 Observed guarantees: every measured release classifies as the table records; either the protocol or the version signal alone carries an at-or-above verdict, and each divergent pair flips once the carrying signal is removed; client and running selected-session server verdicts compose conservatively, an unreadable server-running state and losing both release signals report indeterminate and fall back flat, the default is rechecked after server ensure before projection publication, an unconfigured home is projected only at or above the floor, an explicit `on`, including the historical empty opt-in file, is honored below it, and the below-floor warning is emitted once per home per detected release rather than once per spawn.
 
-The whole real-Herdr lane was run on 2026-08-05 against both the CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
+The retained whole real-Herdr floor matrix was run on 2026-08-05 against historical CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
 
 ```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gated
 ```
 
 Both runs reported `family=real-herdr-gated count=11 failed=0`.
+The required CI lane pin advanced to Herdr 0.8.2 protocol 20 on 2026-09-07.
+The GitHub Actions `Behavior tests (Herdr)` run 33911336023 exercised that pin and reported 11 of 12 real-Herdr scripts passing before the presentation recovery failure.
+After the spawn readiness and cleanup fixes, focused side-by-side 0.8.2 lab verification with the default-session tripwire intact passed the impacted real-herdr-gated scripts:
+
+```sh
+bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
+PATH="$RUNNER_TEMP/bin:$PATH" HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  bin/fm-test-run.sh \
+  tests/fm-backend-autodetect-smoke.test.sh \
+  tests/fm-afk-inject-herdr-e2e.test.sh \
+  tests/fm-backend-herdr-presentation-e2e.test.sh \
+  tests/fm-backend-herdr-launcher-workspace-e2e.test.sh \
+  tests/fm-herdr-session-cleanup-e2e.test.sh \
+  tests/fm-backend-herdr-prune-safety-e2e.test.sh
+```
+
+Observed result: all six scripts exited 0 on Herdr 0.8.2 protocol 20, and the default fleet session's PID, start time, binary SHA-256, mtime, and inode were unchanged.
 The projection suite's unconfigured-home case is release-aware rather than pinned to one outcome, so it proves the projected default on 0.8.0 and the flat fallback with its naming warning on 0.7.4:
 
 ```text
