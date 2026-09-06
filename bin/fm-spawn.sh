@@ -81,11 +81,13 @@
 #   authority, and every ambiguous recovery stays on the flat fallback after
 #   duplicate-agent risk is independently absent. Treehouse allocation and task
 #   metadata are unchanged.
-#   A clean projected create or exact resume makes one bounded attempt to hold
-#   the one session-scoped presentation-order lock (keyed by named session plus
-#   canonical socket, outside any home's state/) through launch handoff. Lock
-#   contention warns and falls back to the ordinary flat layout before any
-#   projection mutation. The exact response-derived new workspace is inserted
+#   A clean projected create holds the one session-scoped presentation-order
+#   lock (keyed by named session plus canonical socket, outside any home's
+#   state/) through launch handoff. An exact resume releases that lock after
+#   reclaim and journal convergence, before Treehouse acquisition; abort cleanup
+#   reacquires it before any Herdr mutation. Lock contention warns and falls back
+#   to the ordinary flat layout before any projection mutation. The exact
+#   response-derived new workspace is inserted
 #   immediately after its owning parent (firstmate or 2ndmate-<id>) contiguous
 #   child block. Ordering never authorizes lifecycle cleanup, and any
 #   unavailable, ambiguous, or failed move warns while the spawn continues.
@@ -657,6 +659,7 @@ HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
+HERDR_PROJECTION_RECOVERED=0
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 SPAWN_TASK_LOCK=
@@ -1940,6 +1943,7 @@ case "$BACKEND" in
           case "$HERDR_RECLAIM_STATUS" in
             0)
               HERDR_PROJECTED=1
+              HERDR_PROJECTION_RECOVERED=1
               HERDR_WORKSPACE_ID=$HERDR_RECOVERY_WORKSPACE_ID
               HERDR_SEEDED_DEFAULT_TAB_ID=""
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
@@ -2051,6 +2055,9 @@ EOF
       exit 1
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
+    if [ "$HERDR_PROJECTION_RECOVERED" -eq 1 ]; then
+      spawn_herdr_presentation_order_lock_release
+    fi
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1

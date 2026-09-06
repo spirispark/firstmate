@@ -38,6 +38,8 @@ assert_contains_local() {  # <haystack> <needle> <msg>
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (required by fm-spawn.sh)"; exit 0; }
+HERDR_BIN=$(command -v herdr)
+HERDR_BIN_DIR=$(dirname "$HERDR_BIN")
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
@@ -280,6 +282,11 @@ WS_PRIMARY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_PRIMARY")
 cat > "$TMP_ROOT/spawn-in-pane.sh" <<SPAWN
 #!/usr/bin/env bash
 set -u
+PATH="$HERDR_BIN_DIR:\$PATH"
+export PATH
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "\${HERDR_PANE_ID:-}" \
+  > "$TMP_ROOT/dupC.identity.json" 2> "$TMP_ROOT/dupC.identity.err"
+echo \$? > "$TMP_ROOT/dupC.identity.rc"
 FM_SPAWN_NO_GUARD=1 FM_HOME="$PRIMARY_HOME" FM_ROOT_OVERRIDE="$ROOT" \\
   "$ROOT/bin/fm-spawn.sh" dupC "$PROJ" "sh -c 'echo launcher-ws-ok'" --mode no-mistakes --yolo off --backend herdr \\
   > "$TMP_ROOT/dupC.out" 2> "$TMP_ROOT/dupC.err"
@@ -291,6 +298,14 @@ lab pane run "$LAUNCH_DUP_PANE" "$TMP_ROOT/spawn-in-pane.sh" >/dev/null 2>&1 \
 i=0
 while [ ! -f "$TMP_ROOT/dupC.rc" ] && [ "$i" -lt 120 ]; do sleep 2; i=$((i + 1)); done
 [ -f "$TMP_ROOT/dupC.rc" ] || fail "fm-spawn.sh never finished inside the launcher's herdr pane"
+[ "$(cat "$TMP_ROOT/dupC.identity.rc" 2>/dev/null)" = 0 ] \
+  || fail "the selected Herdr client could not read the launcher's exact pane from inside it"$'\n'\
+"$(cat "$TMP_ROOT/dupC.identity.err" 2>/dev/null)"
+IN_PANE_IDENTITY=$(cat "$TMP_ROOT/dupC.identity.json" 2>/dev/null)
+[ "$(printf '%s' "$IN_PANE_IDENTITY" | jq -r '.result.pane.pane_id // empty')" = "$LAUNCH_DUP_PANE" ] \
+  || fail "the in-pane read returned a pane other than its exact launcher identity"
+[ "$(printf '%s' "$IN_PANE_IDENTITY" | jq -r '.result.pane.workspace_id // empty')" = "$WS_PRIMARY_DUP" ] \
+  || fail "the in-pane read returned a workspace other than the launcher's exact parent"
 [ "$(cat "$TMP_ROOT/dupC.rc")" = 0 ] \
   || fail "the in-pane spawn failed"$'\n'"$(cat "$TMP_ROOT/dupC.err" 2>/dev/null)"
 

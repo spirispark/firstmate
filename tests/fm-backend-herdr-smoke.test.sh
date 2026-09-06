@@ -35,7 +35,10 @@ herdr_forget_inherited_pane
 SESSION="fm-lab-backend-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SM_SCRATCH=
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   [ -n "$SM_SCRATCH" ] && rm -rf "$SM_SCRATCH"
   herdr_safe_stop_and_delete "$SESSION"
 }
@@ -260,18 +263,57 @@ case "$out" in
 esac
 pass "real herdr: send_text_line runs a command atomically (pane run) and its output is capturable"
 
+# pane run acknowledges dispatch before the restored login shell necessarily
+# owns the foreground again. The next two-step input assertion must start from
+# a settled shell or Enter can race the tail of the preceding command.
+SHELL_READY=false
+READY_SAMPLES=0
+for _ in $(seq 1 100); do
+  PROCESS_INFO=$(fm_backend_herdr_cli "$SESSION" pane process-info --pane "$PANE_ID" 2>/dev/null || true)
+  if printf '%s' "$PROCESS_INFO" | jq -e '
+    .result.process_info as $process
+    | ($process.foreground_processes | length == 1)
+      and ($process.foreground_processes[0].pid == $process.shell_pid)
+  ' >/dev/null 2>&1; then
+    READY_SAMPLES=$((READY_SAMPLES + 1))
+    if [ "$READY_SAMPLES" -ge 10 ]; then
+      SHELL_READY=true
+      break
+    fi
+  else
+    READY_SAMPLES=0
+  fi
+  sleep 0.1
+done
+[ "$SHELL_READY" = true ] || fail "the restored task shell did not settle after pane run"
+
 # --- send_literal + send_key(Enter), the two-step launch-command form -------
 
-fm_backend_herdr_send_literal "$TARGET" 'echo literal-then-key-captain' \
+LITERAL_MARKER="$SM_SCRATCH/literal-submit"
+LITERAL_COMMAND="printf '%s\\n' literal-then-key-captain > '$LITERAL_MARKER'"
+fm_backend_herdr_send_literal "$TARGET" "$LITERAL_COMMAND" \
   || fail "send_literal failed"
-sleep 0.2
+[ ! -e "$LITERAL_MARKER" ] || fail "send_literal submitted the command before Enter"
+LITERAL_READY=false
+for _ in $(seq 1 100); do
+  out=$(fm_backend_herdr_capture "$TARGET" 20 2>/dev/null || true)
+  case "$out" in
+    *literal-then-key-captain*) LITERAL_READY=true; break ;;
+  esac
+  sleep 0.05
+done
+[ "$LITERAL_READY" = true ] || fail "send_literal did not reach the pane's input buffer"$'\n'"$out"
 fm_backend_herdr_send_key "$TARGET" Enter || fail "send_key Enter failed"
-sleep 0.5
-out=$(fm_backend_herdr_capture "$TARGET" 20) || fail "capture failed after send_literal+send_key"
-case "$out" in
-  *literal-then-key-captain*) : ;;
-  *) fail "real herdr: send_literal + send_key(Enter) did not submit and echo the line"$'\n'"$out" ;;
-esac
+LITERAL_SUBMITTED=false
+for _ in $(seq 1 100); do
+  if [ "$(cat "$LITERAL_MARKER" 2>/dev/null)" = literal-then-key-captain ]; then
+    LITERAL_SUBMITTED=true
+    break
+  fi
+  sleep 0.05
+done
+[ "$LITERAL_SUBMITTED" = true ] \
+  || fail "real herdr: send_literal + send_key(Enter) did not submit the command"
 pass "real herdr: send_literal + send_key Enter submit as two separate steps (verified: send-text does NOT auto-submit)"
 
 # --- current_path -------------------------------------------------------------

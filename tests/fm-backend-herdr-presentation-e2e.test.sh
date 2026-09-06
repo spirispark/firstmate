@@ -183,6 +183,16 @@ if [ "$status" -eq 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE
     break
   done
 fi
+if [ "$status" -ne 0 ] && [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    if mkdir "$task_dir/confirmed-gone" 2>/dev/null; then
+      printf 'abort-cleanup-complete\t\t\t%s\n' "${3:-}" >> "$FOCUS_AUDIT_LOG"
+    fi
+    break
+  done
+fi
 if [ -n "$mutation" ]; then
   after=$(focus_snapshot || printf ambiguous/ambiguous)
   printf '%s\t%s\t%s\t%s\n' "$mutation" "$before" "$after" "$mutation_target" >> "$FOCUS_AUDIT_LOG"
@@ -324,7 +334,7 @@ focus_snapshot() {
 assert_focus_is() {  # <expected> <case-name>
   local expected=$1 case_name=$2 actual
   actual=$(focus_snapshot)
-  [ "$actual" = "$expected" ] || fail "$case_name changed active workspace/tab from $expected to $actual"
+  [ "$actual" = "$expected" ] || fail "$case_name changed active workspace/tab from $expected to $actual"$'\n'"focus audit: $(tail -n 20 "$FOCUS_AUDIT_LOG")"$'\n'"Herdr calls: $(tail -n 30 "$HERDR_CALL_LOG")"
 }
 
 focus_audit_line_count() { wc -l < "$FOCUS_AUDIT_LOG" | tr -d '[:space:]'; }
@@ -841,12 +851,12 @@ ABORT_B_PANE=$(cat "$POST_CREATE_ABORT_CONTROL/abort-b/task-pane")
 ABORT_SEQUENCE=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   $1 == "workspace-create" && $4 ~ /^└ abort-a · p:/ { print "create-a" }
   $1 == "workspace-create" && $4 ~ /^└ abort-b · p:/ { print "create-b" }
-  $1 == "pane-close" && $4 == a { print "close-a" }
-  $1 == "pane-close" && $4 == b { print "close-b" }
+  $1 == "abort-cleanup-complete" && $4 == a { print "complete-a" }
+  $1 == "abort-cleanup-complete" && $4 == b { print "complete-b" }
 ')
 case "$ABORT_SEQUENCE" in
-  $'create-a\nclose-a\ncreate-b\nclose-b'|$'create-b\nclose-b\ncreate-a\nclose-a') ;;
-  *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE" ;;
+  $'create-a\ncomplete-a\ncreate-b\ncomplete-b'|$'create-b\ncomplete-b\ncreate-a\ncomplete-a') ;;
+  *) fail "concurrent post-create abort cleanup interleaved outside the presentation lock: $ABORT_SEQUENCE"$'\n'"abort-a: $(cat "$TMP_ROOT/abort-a.err")"$'\n'"abort-b: $(cat "$TMP_ROOT/abort-b.err")"$'\n'"moves: $(tail -n 8 "$FOCUS_AUDIT_LOG")" ;;
 esac
 ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | awk -F '\t' -v a="$ABORT_A_PANE" -v b="$ABORT_B_PANE" '
   ($1 == "workspace-create" || $1 == "tab-create" || $1 == "workspace-move" || ($1 == "pane-close" && $4 != a && $4 != b)) && $2 != $3 { print }
@@ -856,12 +866,12 @@ ABORT_UNRESTORED=$(sed -n "$((ABORT_FOCUS_START + 1)),\$p" "$FOCUS_AUDIT_LOG" | 
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent post-create abort cleanup"
 assert_cleanup_focus_preserved "$ABORT_FOCUS_START" "$ABORT_A_PANE" "$CAPTAIN_FOCUS"
 assert_cleanup_focus_preserved "$ABORT_FOCUS_START" "$ABORT_B_PANE" "$CAPTAIN_FOCUS"
-assert_no_ordering_lifecycle_calls_since "$ABORT_START" "concurrent post-create abort cleanup"
 for ABORT_PANE in "$ABORT_A_PANE" "$ABORT_B_PANE"; do
   if lab pane get "$ABORT_PANE" >/dev/null 2>&1; then
     fail "serialized post-create abort cleanup left exact task pane $ABORT_PANE alive"
   fi
 done
+assert_no_ordering_lifecycle_calls_since "$ABORT_START" "concurrent post-create abort cleanup"
 [ ! -e "$HOME_DIR/state/abort-a.meta" ] && [ ! -e "$HOME_DIR/state/abort-b.meta" ] \
   || fail "post-create abort fixtures published task metadata before launch"
 rm -rf "$POST_CREATE_ABORT_CONTROL"
@@ -1338,6 +1348,7 @@ remember_meta_worktree "$HOME_DIR/state/post-legacy.meta" >/dev/null
   || fail "correction renamed or moved the seeded legacy projection"
 lab tab get "$FLAT_TAB_ID" >/dev/null 2>&1 \
   || fail "correction removed the seeded flat secondmate child tab"
+assert_focus_is "$CAPTAIN_FOCUS" "legacy coexistence setup"
 pass "real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated"
 
 # Teardown multi-home projected tasks by exact pane only.
@@ -1351,6 +1362,7 @@ do
   TASK_HOME=${META_HOME_PAIR#*:}
   teardown_task "$TASK_ID" "$TASK_HOME" > "$TMP_ROOT/td-$TASK_ID.out" 2> "$TMP_ROOT/td-$TASK_ID.err" \
     || fail "multi-home teardown of $TASK_ID failed: $(cat "$TMP_ROOT/td-$TASK_ID.err")"
+  assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown of $TASK_ID"
 done
 assert_focus_is "$CAPTAIN_FOCUS" "multi-home teardown"
 pass "real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority"

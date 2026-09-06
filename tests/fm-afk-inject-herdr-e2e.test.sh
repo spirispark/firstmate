@@ -80,6 +80,8 @@ fm_backend_source herdr || fail "fm_backend_source herdr failed"
 # --- build the isolated session's supervisor pane ----------------------------
 
 fm_backend_herdr_version_check || fail "version_check failed against the real installed herdr"
+REAL_HERDR=$(command -v herdr)
+HERDR_BIN_DIR=$(dirname "$REAL_HERDR")
 
 STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-e2e.XXXXXX")
 mkdir -p "$STATE_DIR"
@@ -156,10 +158,15 @@ cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
 MARK=$'\xE2\x81\xA3'
 LOG="$1"
+HERDR_BIN_DIR="$2"
+HERDR_LAB_HELPER="$3"
+PATH="$HERDR_BIN_DIR:$PATH"
+export PATH
 AGENT_SOURCE=fm-test-supervisor
 AGENT_LABEL=fm-test-supervisor
 report_agent_state() {  # <idle|working>
-  herdr pane report-agent "$HERDR_PANE_ID" --source "$AGENT_SOURCE" --agent "$AGENT_LABEL" --state "$1" --session "$HERDR_SESSION" >/dev/null 2>&1
+  "$HERDR_LAB_HELPER" run "$HERDR_SESSION" pane report-agent "$HERDR_PANE_ID" \
+    --source "$AGENT_SOURCE" --agent "$AGENT_LABEL" --state "$1" >/dev/null 2>&1
 }
 OLD_STTY=$(stty -g 2>/dev/null || true)
 [ -z "$OLD_STTY" ] || stty -echo -icanon min 1 time 0 2>/dev/null || true
@@ -167,7 +174,7 @@ cleanup() {
   [ -z "$OLD_STTY" ] || stty "$OLD_STTY" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
-report_agent_state idle
+report_agent_state idle || exit 1
 
 _buf=
 # redraw: keep the composer visually pinned to ONE terminal row regardless of
@@ -199,7 +206,11 @@ submit_line() {
   else
     _c="user"
   fi
-  _hex=$(printf '%s' "$_line" | od -An -tx1 | tr -d ' \n')
+  # Resolve the POSIX utility path explicitly. A Herdr pane is a login-shell
+  # environment and may put an unrelated executable named `od` ahead of the
+  # system octal-dump utility, which would corrupt only this test's sentinel
+  # oracle while the submitted digest itself remained intact.
+  _hex=$(printf '%s' "$_line" | command -p od -An -tx1 | tr -d ' \n')
   printf '%s\t%s\t%s\n' "$_hex" "$_line" "$_c" >> "$LOG"
   _buf=
   printf '\r\033[K\n'
@@ -229,12 +240,25 @@ done
 LOOP
 chmod +x "$LOOP_SCRIPT"
 
-fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" "bash '$LOOP_SCRIPT' '$LOG_FILE'" \
+fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" \
+  "bash '$LOOP_SCRIPT' '$LOG_FILE' '$HERDR_BIN_DIR' '$HERDR_LAB_HELPER'" \
   || fail "could not start the supervisor-loop script in the scratch herdr pane"
 sleep 1  # let the loop start and settle
 
+# A login shell inside a Herdr pane may rebuild PATH. Require the synthetic
+# agent to be visible through the exact client selected by this test before
+# any delivery assertion can rely on native agent-state confirmation.
+REGISTERED=false
+for _ in $(seq 1 30); do
+  if [ "$(fm_backend_herdr_agent_status_raw "$SESSION" "$PANE_ID")" = idle ]; then
+    REGISTERED=true
+    break
+  fi
+  sleep 0.1
+done
+[ "$REGISTERED" = true ] || fail "the supervisor fixture did not register through the selected Herdr client"
+
 # --- herdr shim: forwards to the real binary, optionally swallows one Enter --
-REAL_HERDR=$(command -v herdr)
 HERDR_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-shim.XXXXXX")
 cat > "$HERDR_SHIM_DIR/herdr" <<SHIM
 #!/usr/bin/env bash
