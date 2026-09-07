@@ -188,7 +188,7 @@ fm_backend_herdr_cli() {
 }
 
 fm_backend_herdr_projection_close_pane_focus_preserving() {
-  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
+  export FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   [ ! -e "$FIXTURE_DIR/focus-refuse" ] || return 1
   [ ! -e "$FIXTURE_DIR/close-unconfirmed" ] || {
     printf '%s\n' "$*" >> "$CLOSE_LOG"
@@ -198,7 +198,7 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {
   [ "${3:-}" = no-agent ] || return 1
   printf '%s\n' "$*" >> "$CLOSE_LOG"
   : > "$FIXTURE_DIR/closed"
-  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
+  export FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
 }
 
 write_v1() { # <id> [token]
