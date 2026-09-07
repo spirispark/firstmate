@@ -840,7 +840,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
 # exactly as before this hardening.
 fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state]
   local session=$1 pane_id=$2 required_agent_state=${3:-}
-  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record plan_emptying_workspace
+  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record plan_workspace_status
   FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=""
   FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   [ -n "$pane_id" ] || return 0
@@ -872,13 +872,13 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   plan=plain
   plan_shell_pid=
   plan_move_record=
-  plan_emptying_workspace=0
+  plan_workspace_status=ambiguous
   if [ -n "$target_ws" ]; then
     plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane_id" "$target_ws" "$target_tab" "${before%%$'\t'*}")
     fm_backend_herdr_parse_emptying_close_plan "$plan"
     plan=$FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN
     plan_move_record=$FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD
-    plan_emptying_workspace=$FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING
+    plan_workspace_status=$FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS
     case "$plan" in
       death\ *)
         plan_shell_pid=${plan#death }
@@ -902,16 +902,18 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   else
     close_status=1
   fi
-  if [ "$close_status" -eq 0 ] && [ "$plan_emptying_workspace" = 1 ]; then
-    if ! fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
+  if [ "$close_status" -eq 0 ] && [ -n "$target_ws" ] && [ "$plan_workspace_status" != nonempty ]; then
+    if fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
+      FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
+    elif [ "$plan_workspace_status" = emptying ]; then
       echo "warning: herdr presentation cleanup did not confirm removal of the emptied workspace" >&2
+      close_status=1
+    else
       close_status=1
     fi
   fi
   if [ "$close_status" -ne 0 ]; then
     fm_backend_herdr_emptying_move_rollback "$plan_move_record" || true
-  elif [ -n "$target_ws" ]; then
-    FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=1
   fi
   fm_backend_herdr_projection_focus_restore "$session" "$before" "pane close" || return 2
   if [ "$plan" = death ]; then
@@ -995,6 +997,8 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # fm_backend_herdr_emptying_move_rollback when removal is not confirmed.
 # Once the exact one-tab and one-pane workspace-emptying topology is proved, an
 # "emptying<TAB><ws>" record line is emitted before the final plan.
+# A positively non-empty target emits "nonempty<TAB><ws>"; any unreadable or
+# contradictory topology emits "ambiguous<TAB><ws>".
 # Never fails; every ambiguity plans "plain".
 # The death plan requires the close to empty the workspace (exactly one tab
 # and one pane, both the target), the target workspace to sit behind the
@@ -1003,18 +1007,40 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # to hold one provably idle recognized shell with no non-helper descendants.
 fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <tab-id> <focused-workspace-id>
   local session=$1 pane_id=$2 ws_id=$3 tab_id=$4 focused_ws=$5
-  local tabs panes list indices r rest a len capable socket mover response move_status shell_pid before_order
+  local tabs panes list indices r rest a len capable socket mover response move_status shell_pid before_order tab_shape tab_count tab_match pane_shape pane_count pane_match
   [ -n "$ws_id" ] && [ -n "$tab_id" ] && [ -n "$focused_ws" ] || { printf 'plain\n'; return 0; }
-  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$ws_id" 2>/dev/null) || { printf 'plain\n'; return 0; }
-  printf '%s' "$tabs" | jq -e --arg tab "$tab_id" '
-    (.result.tabs | type) == "array" and (.result.tabs | length) == 1
-    and .result.tabs[0].tab_id == $tab
-  ' >/dev/null 2>&1 || { printf 'plain\n'; return 0; }
-  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$ws_id" 2>/dev/null) || { printf 'plain\n'; return 0; }
-  printf '%s' "$panes" | jq -e --arg pane "$pane_id" '
-    (.result.panes | type) == "array" and (.result.panes | length) == 1
-    and .result.panes[0].pane_id == $pane
-  ' >/dev/null 2>&1 || { printf 'plain\n'; return 0; }
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$ws_id" 2>/dev/null) || { printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0; }
+  tab_shape=$(printf '%s' "$tabs" | jq -r --arg tab "$tab_id" '
+    select((.result.tabs | type) == "array")
+    | "\(.result.tabs | length)\t\([.result.tabs[]? | select(.tab_id == $tab)] | length)"
+  ' 2>/dev/null) || tab_shape=
+  case "$tab_shape" in
+    *$'\t'*) ;;
+    *) printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0 ;;
+  esac
+  tab_count=${tab_shape%%$'\t'*}
+  tab_match=${tab_shape#*$'\t'}
+  case "$tab_count:$tab_match" in
+    *[!0-9:]*) printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0 ;;
+  esac
+  [ "$tab_match" -eq 1 ] || { printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0; }
+  [ "$tab_count" -eq 1 ] || { printf 'nonempty\t%s\nplain\n' "$ws_id"; return 0; }
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$ws_id" 2>/dev/null) || { printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0; }
+  pane_shape=$(printf '%s' "$panes" | jq -r --arg pane "$pane_id" '
+    select((.result.panes | type) == "array")
+    | "\(.result.panes | length)\t\([.result.panes[]? | select(.pane_id == $pane)] | length)"
+  ' 2>/dev/null) || pane_shape=
+  case "$pane_shape" in
+    *$'\t'*) ;;
+    *) printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0 ;;
+  esac
+  pane_count=${pane_shape%%$'\t'*}
+  pane_match=${pane_shape#*$'\t'}
+  case "$pane_count:$pane_match" in
+    *[!0-9:]*) printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0 ;;
+  esac
+  [ "$pane_match" -eq 1 ] || { printf 'ambiguous\t%s\nplain\n' "$ws_id"; return 0; }
+  [ "$pane_count" -eq 1 ] || { printf 'nonempty\t%s\nplain\n' "$ws_id"; return 0; }
   printf 'emptying\t%s\n' "$ws_id"
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || { printf 'plain\n'; return 0; }
   indices=$(printf '%s' "$list" | jq -r --arg ws "$ws_id" --arg focused "$focused_ws" '
@@ -1096,17 +1122,22 @@ fm_backend_herdr_parse_emptying_close_plan() {  # <plan-output>
   FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=plain
   FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=
   FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=0
+  FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=ambiguous
   while [ "$raw" != "${raw#*$'\n'}" ]; do
     line=${raw%%$'\n'*}
     raw=${raw#*$'\n'}
     case "$line" in
-      emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1 ;;
+      emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1; FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=emptying ;;
+      nonempty$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=nonempty ;;
+      ambiguous$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=ambiguous ;;
       moved$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=$line ;;
       plain|death\ *) FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=$line ;;
     esac
   done
   case "$raw" in
-    emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1 ;;
+    emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1; FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=emptying ;;
+    nonempty$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=nonempty ;;
+    ambiguous$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS=ambiguous ;;
     moved$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=$raw ;;
     plain|death\ *) FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=$raw ;;
   esac
@@ -1933,11 +1964,11 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
   esac
 }
 
-# fm_backend_herdr_workspace_wait_dead: after a proved workspace-emptying close
-# has proved the exact pane gone, wait for Herdr to publish removal of its
-# now-empty exact workspace. Pane disappearance and the first absent-workspace
-# response can precede that workspace's focus transition on 0.7.5, so require
-# two consecutive exact-absence samples before restoring focus.
+# fm_backend_herdr_workspace_wait_dead: after the exact pane is gone, wait for
+# Herdr to publish removal of its target workspace. Pane disappearance and the
+# first absent-workspace response can precede that workspace's focus transition
+# on 0.7.5, so require two consecutive exact-absence samples before restoring
+# focus.
 fm_backend_herdr_workspace_wait_dead() {  # <session> <workspace_id>
   local session=$1 workspace_id=$2 attempt=0 presence dead_seen=0
   local max_attempts=${FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS:-40}
@@ -2880,7 +2911,9 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # back to the plain close, matching the pre-hardening contract.
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
-  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record plan_emptying_workspace close_failed
+  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record plan_workspace_status close_failed
+  FM_BACKEND_HERDR_KILL_WORKSPACE_REMOVAL_CONFIRMED=0
+  FM_BACKEND_HERDR_KILL_WORKSPACE_ID=
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
@@ -2888,14 +2921,21 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
     target_pane=$(printf '%s' "$info" | jq -r '.result.pane.pane_id // empty' 2>/dev/null)
     target_tab=$(printf '%s' "$info" | jq -r '.result.pane.tab_id // empty' 2>/dev/null)
     target_ws=$(printf '%s' "$info" | jq -r '.result.pane.workspace_id // empty' 2>/dev/null)
-    if [ "$target_pane" = "$pane" ] && [ -n "$target_tab" ] && [ "$target_tab" != "$active_tab" ]; then
-      plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane" "$target_ws" "$target_tab" "${before%%$'\t'*}")
+    if [ "$target_pane" = "$pane" ] && [ -n "$target_tab" ]; then
+      FM_BACKEND_HERDR_KILL_WORKSPACE_ID=$target_ws
+      plan=plain
       plan_move_record=
-      plan_emptying_workspace=0
-      fm_backend_herdr_parse_emptying_close_plan "$plan"
-      plan=$FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN
-      plan_move_record=$FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD
-      plan_emptying_workspace=$FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING
+      plan_workspace_status=ambiguous
+      if [ -n "$target_ws" ]; then
+        plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane" "$target_ws" "$target_tab" "${before%%$'\t'*}")
+        fm_backend_herdr_parse_emptying_close_plan "$plan"
+        plan=$FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN
+        plan_move_record=$FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD
+        plan_workspace_status=$FM_BACKEND_HERDR_EMPTYING_CLOSE_WORKSPACE_STATUS
+      fi
+      if [ "$target_tab" = "$active_tab" ]; then
+        plan=plain
+      fi
       close_failed=0
       case "$plan" in
         death\ *)
@@ -2909,9 +2949,13 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
           fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || close_failed=1
           ;;
       esac
-      if [ "$close_failed" = 0 ] && [ "$plan_emptying_workspace" = 1 ]; then
-        if ! fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
+      if [ "$close_failed" = 0 ] && [ -n "$target_ws" ] && [ "$plan_workspace_status" != nonempty ]; then
+        if fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
+          FM_BACKEND_HERDR_KILL_WORKSPACE_REMOVAL_CONFIRMED=1
+        elif [ "$plan_workspace_status" = emptying ]; then
           echo "warning: herdr task kill did not confirm removal of the emptied workspace" >&2
+          close_failed=1
+        else
           close_failed=1
         fi
       fi

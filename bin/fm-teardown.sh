@@ -41,7 +41,7 @@
 # only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. It retires the non-authoritative journal only when a
 # read-only token correlation agrees with that endpoint and the focus-preserving
-# close helper confirms the pane removal and any emptied workspace removal.
+# close helper confirms pane removal and the required presentation workspace removal.
 # Otherwise the journal stays quarantined for manual inspection.
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
@@ -2174,6 +2174,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 
 cleanup_firstmate_home_children() {
   local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local child_journal child_workspace child_workspace_removed
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -2202,10 +2203,24 @@ cleanup_firstmate_home_children() {
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
+        FM_BACKEND_HERDR_KILL_WORKSPACE_REMOVAL_CONFIRMED=0
         fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
+        fi
+        child_journal="$sub_state/$child_id.herdr-presentation"
+        if [ -e "$child_journal" ] || [ -L "$child_journal" ]; then
+          child_workspace=$(meta_value "$child_meta" herdr_workspace_id)
+          child_workspace_removed=${FM_BACKEND_HERDR_KILL_WORKSPACE_REMOVAL_CONFIRMED:-0}
+          if [ "$child_workspace_removed" != 1 ] && [ -n "$child_workspace" ] \
+             && fm_backend_herdr_workspace_wait_dead "$FM_BACKEND_HERDR_SESSION" "$child_workspace"; then
+            child_workspace_removed=1
+          fi
+          if [ "$child_workspace_removed" != 1 ]; then
+            echo "error: herdr presentation workspace for child $child_id is not confirmed removed; retaining that child's durable identity records and stopping forced cleanup" >&2
+            return 1
+          fi
         fi
       elif [ "$child_backend" = zellij ]; then
         # Zellij titles are scoped by the owning home tag, so forced secondmate

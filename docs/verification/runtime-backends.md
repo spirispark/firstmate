@@ -527,17 +527,18 @@ tests/fm-teardown.test.sh
 tests/fm-backend-herdr.test.sh
 ```
 
-Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; a plain fallback that closed a one-tab and one-pane projected pane but left its emptied workspace present also retained the journal and durable endpoint records; and every presence-gate mode accepted only a structured not-found as gone.
+Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; a plain fallback that closed a one-tab and one-pane projected pane but left its emptied workspace present also retained the journal and durable endpoint records; an ambiguous topology with a present or unknown workspace did not claim workspace-removal confirmation; and every presence-gate mode accepted only a structured not-found as gone.
 
 The same fixtures verified three further boundaries on 2026-07-29: missing or malformed endpoint identity and an unparseable pane presence refused record removal with everything retained; the SIGKILL escalation re-read the exact pane's process information and refused to signal when a different shell pid owned the pane, falling back to the plain close with the original process untouched; and a reposition whose removal then failed on every path restored the exact original workspace order through a second verified move and reported the close as failed.
 
-The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed.
+The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed and child Herdr records whose presentation workspace removal remains present or unknown.
 
 Observed output:
 
 ```text
 ok - forced secondmate teardown preflights every Herdr child before cleanup mutation
 ok - forced secondmate teardown retains Herdr child identity until exact pane disappearance
+ok - forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed
 ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
 ```
 

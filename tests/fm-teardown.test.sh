@@ -1618,7 +1618,32 @@ case "\${1:-} \${2:-}" in
       printf '%s\n' '{"sessions":[{"name":"childsession","running":true,"socket_path":"$case_dir/child.sock"}]}'
     fi
     ;;
-  "workspace list") exit 1 ;;
+	  "workspace list")
+	    if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ]; then
+	      if [ "\${FM_FAKE_HERDR_CHILD_WORKSPACE_UNKNOWN:-0}" = 1 ]; then
+	        printf '%s\n' 'not-json'
+	      elif [ "\${FM_FAKE_HERDR_CHILD_WORKSPACE_STILL_PRESENT:-0}" = 1 ]; then
+	        printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wP","active_tab_id":"wP:t1","focused":true},{"workspace_id":"wC","active_tab_id":"wC:t1","focused":false}]}}'
+	      else
+	        printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wP","active_tab_id":"wP:t1","focused":true}]}}'
+	      fi
+	    else
+	      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wP","active_tab_id":"wP:t1","focused":true},{"workspace_id":"wC","active_tab_id":"wC:t1","focused":false}]}}'
+	    fi
+	    ;;
+	  "tab list")
+	    case "\$*" in
+	      *"--workspace wP"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wP:t1","focused":true}]}}' ;;
+	      *"--workspace wC"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wC:t1","workspace_id":"wC"}]}}' ;;
+	      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+	    esac
+	    ;;
+	  "pane list")
+	    case "\$*" in
+	      *"--workspace wC"*) printf '%s\n' '{"result":{"panes":[{"pane_id":"wC:p1","tab_id":"wC:t1"}]}}' ;;
+	      *) printf '%s\n' '{"result":{"panes":[]}}' ;;
+	    esac
+	    ;;
   "pane get")
     if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ]; then
       if [ "\${FM_FAKE_HERDR_PRESENCE_UNKNOWN:-0}" = 1 ]; then
@@ -1779,6 +1804,51 @@ test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed() {
   assert_grep "retaining that child's durable identity records" "$case_dir/stderr" \
     "herdr-child-unconfirmed-close: refusal did not explain child record retention"
   pass "forced secondmate teardown retains Herdr child identity until exact pane disappearance"
+}
+
+test_forced_secondmate_herdr_child_retains_records_when_workspace_removal_unconfirmed() {
+  local mode case_dir home log closed rc
+  for mode in present unknown; do
+    case_dir=$(make_case "herdr-child-workspace-$mode")
+    write_meta "$case_dir" local-only secondmate
+    configure_secondmate_with_herdr_child "$case_dir"
+    home="$case_dir/secondmate-home"
+    printf '%s\n' \
+      'version=1' \
+      'task_id=child-herdr' \
+      'projection_id=AbCdEfGhIjKlMnOpQrStUv' \
+      > "$home/state/child-herdr.herdr-presentation"
+    log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+    rc=0
+    if [ "$mode" = present ]; then
+      FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+        FM_FAKE_HERDR_CHILD_WORKSPACE_STILL_PRESENT=1 \
+        FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+        run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    else
+      FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+        FM_FAKE_HERDR_CHILD_WORKSPACE_UNKNOWN=1 \
+        FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+        run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    fi
+    [ "$rc" -ne 0 ] \
+      || fail "herdr-child-workspace-$mode: teardown erased records after workspace removal was unconfirmed"
+    [ -e "$closed" ] \
+      || fail "herdr-child-workspace-$mode: fixture did not attempt the child close"
+    [ -e "$home/state/child-herdr.meta" ] \
+      || fail "herdr-child-workspace-$mode: unconfirmed workspace removal erased child metadata"
+    [ -e "$home/state/child-herdr.status" ] \
+      || fail "herdr-child-workspace-$mode: unconfirmed workspace removal erased child status"
+    [ -e "$home/state/child-herdr.herdr-presentation" ] \
+      || fail "herdr-child-workspace-$mode: unconfirmed workspace removal erased the child journal"
+    [ -e "$case_dir/state/task-x1.meta" ] \
+      || fail "herdr-child-workspace-$mode: failed child cleanup erased parent metadata"
+    [ -d "$home" ] \
+      || fail "herdr-child-workspace-$mode: failed child cleanup removed the secondmate home"
+    assert_grep "presentation workspace for child child-herdr is not confirmed removed" "$case_dir/stderr" \
+      "herdr-child-workspace-$mode: refusal did not explain workspace-removal retention"
+  done
+  pass "forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed"
 }
 
 configure_nested_secondmate_with_herdr_grandchild() {  # <case-dir>
@@ -2734,6 +2804,7 @@ test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
 test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
+test_forced_secondmate_herdr_child_retains_records_when_workspace_removal_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed

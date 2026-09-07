@@ -1661,9 +1661,19 @@ test_projection_close_non_emptying_stays_plain_without_proof_or_move() {
     FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
     FM_FAKE_MOVER_LOG="$dir/mover.log" FM_FAKE_MOVER_RESPONSE="$dir/no-response" \
     FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2' "$ROOT" 2>&1)
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      set +e
+      fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2
+      rc=$?
+      set -e
+      printf "confirmed=%s\n" "${FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED:-unset}"
+      exit "$rc"
+    ' "$ROOT" 2>&1)
   status=$?
   [ "$status" -eq 0 ] || fail "non-emptying close should succeed through the plain close: $out"
+  assert_contains "$out" "confirmed=0" \
+    "non-emptying close must not claim workspace removal"
   assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "non-emptying close did not use the plain close"
   assert_not_contains "$(cat "$log")" $'pane\x1fprocess-info' "non-emptying close ran the idle-shell proof"
   [ ! -s "$dir/mover.log" ] || fail "non-emptying close invoked the workspace mover"
@@ -1694,6 +1704,54 @@ test_projection_close_plain_without_move_requires_structured_removal() {
   assert_contains "$(cat "$log")" "pane close w2:p2" \
     "the no-move unconfirmed regression did not reach the explicit close"
   pass "herdr presentation cleanup: no-move plain close requires structured pane removal"
+}
+
+test_projection_close_ambiguous_topology_requires_workspace_removal_confirmation() {
+  local mode dir log resp fb out status bgpid
+  for mode in present unknown; do
+    dir="$TMP_ROOT/close-ambiguous-topology-$mode"; mkdir -p "$dir/responses"
+    log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
+    printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
+    printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
+    printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/6.out"
+    if [ "$mode" = present ]; then
+      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/7.out"
+    else
+      printf '%s\n' 'not-json' > "$resp/7.out"
+    fi
+    printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/8.out"
+    printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
+    sleep 300 & bgpid=$!
+    make_death_lab "$dir" "$bgpid"
+    fb=$(make_herdr_fakebin "$dir")
+    out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
+      FM_FAKE_MOVER_LOG="$dir/mover.log" FM_FAKE_MOVER_RESPONSE="$dir/no-response" \
+      FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 \
+      FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+      bash -c '
+        . "$0/bin/backends/herdr.sh"
+        set +e
+        fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2
+        rc=$?
+        set -e
+        printf "confirmed=%s\n" "${FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED:-unset}"
+        exit "$rc"
+      ' "$ROOT" 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] \
+      || fail "ambiguous topology with $mode workspace removal should not report confirmed cleanup: $out"
+    assert_contains "$out" "confirmed=0" \
+      "ambiguous topology with $mode workspace removal claimed confirmation"
+    assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' \
+      "ambiguous topology with $mode workspace removal did not exercise the pane close"
+    assert_not_contains "$(cat "$log")" $'workspace\x1fclose' \
+      "ambiguous topology with $mode workspace removal escalated to workspace cleanup"
+    kill -0 "$bgpid" 2>/dev/null || fail "ambiguous topology with $mode workspace removal signaled the pane shell"
+    kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  done
+  pass "herdr presentation cleanup: ambiguous topology requires confirmed workspace removal"
 }
 
 test_projection_close_ambiguous_positions_fall_back_to_plain_close() {
@@ -4541,6 +4599,7 @@ test_projection_close_emptying_before_last_focus_needs_no_move
 test_projection_close_emptying_last_workspace_needs_no_move
 test_projection_close_non_emptying_stays_plain_without_proof_or_move
 test_projection_close_plain_without_move_requires_structured_removal
+test_projection_close_ambiguous_topology_requires_workspace_removal_confirmation
 test_projection_close_ambiguous_positions_fall_back_to_plain_close
 test_projection_close_move_failure_falls_back_to_plain_close
 test_projection_close_busy_pane_falls_back_to_plain_close

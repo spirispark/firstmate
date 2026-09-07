@@ -21,8 +21,8 @@
 # prerequisite is immediately rechecked before the existing exact-pane
 # focus-preserving close helper is called.
 # The script never closes a workspace. It removes only the matching journal,
-# and only after the close helper confirms the exact pane removal and any
-# emptied workspace removal. Every error warns and returns success so session
+# and only after the close helper confirms exact pane removal and presentation
+# workspace removal. Every error warns and returns success so session
 # startup continues conservatively.
 set -u
 
