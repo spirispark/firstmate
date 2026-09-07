@@ -352,7 +352,7 @@ ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session
 
 The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
 
-The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
+The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 17:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
@@ -396,9 +396,11 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-herdr-session-cleanup-e2e.test.sh
 ```
 
-Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane idle shell, either childless or with only the verified restored-qterm helper child, was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
+Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
-That lane was refreshed on 2026-09-07 against Herdr 0.8.2 protocol 20 through the pinned side-by-side installer. Restored panes whose process-info foreground shell is exactly `zsh (qterm)` and whose only direct child has `args` `/bin/zsh --login`, no descendants, and `comm` exactly `/bin/zsh` on BSD `ps` or `zsh` on Linux procps are accepted; generic shell children and persistent non-helper children such as `gitstatusd`, `zsh-async`, and `direnv` still fail the proof and take the plain-close fallback.
+That lane was refreshed on 2026-09-07 against Herdr 0.8.2 protocol 20 through the pinned side-by-side installer.
+Restored panes whose process-info foreground shell is exactly `zsh (qterm)` and whose only direct child has `args` `/bin/zsh --login`, no descendants, and `comm` exactly `/bin/zsh` on BSD `ps` or `zsh` on Linux procps are accepted by the shared idle-shell proof.
+Generic shell children and persistent non-helper children such as `gitstatusd`, `zsh-async`, and `direnv` still fail that proof; session-start cleanup preserves those panes, and task-close planning takes the plain-close fallback.
 
 ### Workspace-removal focus safety
 
@@ -483,8 +485,7 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gate
 
 Both runs reported `family=real-herdr-gated count=11 failed=0`.
 The required CI lane pin advanced to Herdr 0.8.2 protocol 20 on 2026-09-07.
-The GitHub Actions `Behavior tests (Herdr)` run 33911336023 exercised that pin and reported 11 of 12 real-Herdr scripts passing before the presentation recovery failure.
-After the spawn readiness and cleanup fixes, focused side-by-side 0.8.2 lab verification with the default-session tripwire intact passed the impacted real-herdr-gated scripts:
+Focused side-by-side 0.8.2 lab verification with the default-session tripwire intact passed the impacted real-herdr-gated scripts:
 
 ```sh
 bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
@@ -527,19 +528,38 @@ tests/fm-teardown.test.sh
 tests/fm-backend-herdr.test.sh
 ```
 
-Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; a plain fallback that closed a one-tab and one-pane projected pane but left its emptied workspace present also retained the journal and durable endpoint records; an ambiguous topology with a present or unknown workspace did not claim workspace-removal confirmation; and every presence-gate mode accepted only a structured not-found as gone.
+Observed guarantees: a contended presentation lock refused the teardown before the isolated copy was returned, with the task branch, every durable record, and the endpoint intact and no pane close attempted; the retry after the contention cleared returned the copy, closed the pane under the lock, and removed the records; an unknown structured-presence result after an attempted projected close retained the journal and every record with a nonzero exit; and every presence-gate mode accepted only a structured not-found as gone.
 
 The same fixtures verified three further boundaries on 2026-07-29: missing or malformed endpoint identity and an unparseable pane presence refused record removal with everything retained; the SIGKILL escalation re-read the exact pane's process information and refused to signal when a different shell pid owned the pane, falling back to the plain close with the original process untouched; and a reposition whose removal then failed on every path restored the exact original workspace order through a second verified move and reported the close as failed.
 
-The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed and child Herdr records whose presentation workspace removal remains present or unknown.
+The teardown fixture was re-run on 2026-07-31 after extending the same fail-closed boundary through forced secondmate cleanup, including recursive cleanup of a nested secondmate whose Herdr grandchild close remains unconfirmed.
 
 Observed output:
 
 ```text
 ok - forced secondmate teardown preflights every Herdr child before cleanup mutation
 ok - forced secondmate teardown retains Herdr child identity until exact pane disappearance
-ok - forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed
 ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
+```
+
+The teardown fixture was refreshed on 2026-09-07 for Herdr preflight ordering and the universal recorded-workspace-removal invariant:
+
+```sh
+tests/fm-teardown.test.sh
+```
+
+The run completed 65 of 65 assertions green.
+
+Observed output:
+
+```text
+ok - herdr flat teardown preflight runs before any side-effecting cleanup step
+ok - herdr projection teardown retains records when close helper fails after pane disappearance
+ok - herdr projection teardown retains records without close-helper workspace identity
+ok - herdr projection teardown retains records when a plain emptying close leaves the workspace present
+ok - herdr flat teardown retains records when a journal exists but the recorded workspace is still present
+ok - forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed
+ok - forced secondmate teardown retains Herdr child records unless the helper confirmed the recorded child workspace gone
 ```
 
 ### Composer and operational input

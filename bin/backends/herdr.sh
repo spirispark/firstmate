@@ -790,7 +790,7 @@ fm_backend_herdr_projection_focus_snapshot() {  # <session>
 # explicit pane.close that empties a non-focused workspace moves focus to
 # that workspace's neighbor (upstream #1328/#1877), and a pane-death removal
 # before a non-last focused workspace moves focus to the focused workspace's
-# right neighbor (upstream #1621/#1912); both fixes are unreleased.
+# right neighbor (upstream #1621/#1912); both fixes are absent from that release.
 # A single tab.focus on the exact response-independent pre-operation tab id
 # restores both the workspace and tab atomically.
 fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation>
@@ -836,8 +836,8 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
 # behind the focused one when needed, then end the pane's verified idle
 # shell so Herdr removes the emptied workspace through its focus-preserving
 # pane-death path. The exact-tab restore below remains the backstop, and any
-# ambiguity falls back to the plain explicit close, which the backstop masks
-# exactly as before this hardening.
+# ambiguity falls back to the plain explicit close; the backstop still restores
+# focus, while callers gate durable cleanup on confirmed workspace removal.
 fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state]
   local session=$1 pane_id=$2 required_agent_state=${3:-}
   local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record plan_workspace_status
@@ -953,8 +953,9 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 # load-bearing. That floor has ONE owner, the spawn-time gate
 # fm_backend_herdr_presentation_enabled, so every new projection is either on a
 # supported release or is a home's deliberate below-floor opt-in. Session-start
-# cleanup deliberately retires a leftover projection husk on every release,
-# including below the floor. The accepted exposure is limited to the rare
+# cleanup deliberately attempts to retire a leftover projection husk on every
+# release, including below the floor, but the journal retires only after
+# confirmed workspace removal. The accepted exposure is limited to the rare
 # downgrade path where a home projected on Herdr 0.8.0 or newer and then moved
 # to a 0.7.x release, and occurs once per leftover workspace at session start
 # rather than once per task teardown; the exact prior-tab restore bounds it.

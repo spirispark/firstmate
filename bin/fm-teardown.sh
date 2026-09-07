@@ -37,12 +37,14 @@
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
-# A Herdr presentation journal never authorizes cleanup. Teardown still closes
-# only the exact task pane from ordinary endpoint metadata and never calls
-# `workspace close`. It retires the non-authoritative journal only when a
-# read-only token correlation agrees with that endpoint and the focus-preserving
-# close helper confirms pane removal and the required presentation workspace removal.
-# Otherwise the journal stays quarantined for manual inspection.
+# A Herdr presentation journal never authorizes endpoint selection or workspace
+# closure. Teardown still closes only the exact task pane from ordinary endpoint
+# metadata and never calls `workspace close`.
+# Once such a journal exists, durable task records can retire only after the
+# recorded `herdr_workspace_id` is confirmed removed under the named-session
+# presentation lock, even when the endpoint no longer matches the journal.
+# A read-only token-correlated journal is removed only at that same gate;
+# otherwise the journal stays quarantined for manual inspection.
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.
@@ -51,8 +53,10 @@
 # is the approved discard path that prevalidates child removal targets, locks each
 # descendant home's task set before enumeration, and holds those locks through
 # child cleanup. Contention refuses the complete forced teardown before child
-# mutation. It then discards child work, kills child runtime endpoints, and removes
-# the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
+# mutation. A Herdr child with a presentation journal follows the same
+# recorded-workspace gate, and a close-helper workspace confirmation is trusted
+# only when it names that child's recorded workspace. It then discards child
+# work, kills child runtime endpoints, and removes the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
