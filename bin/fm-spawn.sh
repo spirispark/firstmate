@@ -2174,10 +2174,21 @@ spawn_herdr_pane_wait_ready() {  # <session> <pane_id>
   local stable=0 i=0 process_info
   for i in $(seq 1 "$max_samples"); do
     process_info=$(fm_backend_herdr_cli "$herdr_ses" pane process-info --pane "$herdr_pane_id" 2>/dev/null || true)
-    if printf '%s' "$process_info" | jq -e '
-      .result.process_info as $process
-      | ($process.foreground_processes | length == 1)
-        and ($process.foreground_processes[0].pid == $process.shell_pid)
+    if printf '%s' "$process_info" | jq -e --arg pane "$herdr_pane_id" '
+      .result as $result
+      | $result.process_info as $process
+      | $process.foreground_processes as $foreground
+      | ($result.type == "pane_process_info")
+        and (($process | type) == "object")
+        and ($process.pane_id == $pane)
+        and (($process.shell_pid | type) == "number")
+        and ($process.shell_pid > 1)
+        and (($process.foreground_process_group_id | type) == "number")
+        and ($process.foreground_process_group_id == $process.shell_pid)
+        and (($foreground | type) == "array")
+        and (($foreground | length) == 1)
+        and (($foreground[0].pid | type) == "number")
+        and ($foreground[0].pid == $process.shell_pid)
     ' >/dev/null 2>&1; then
       stable=$((stable + 1))
       [ "$stable" -ge "$stable_required" ] && return 0
