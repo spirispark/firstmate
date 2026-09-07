@@ -1878,22 +1878,48 @@ configure_herdr_projection_teardown_case() {  # <case-dir>
 set -u
 printf '%s\n' "$*" >> "${FM_FAKE_HERDR_LOG:?}"
 case "${1:-} ${2:-}" in
-  "workspace list")
-    if [ -e "${FM_FAKE_HERDR_RESTORED:?}" ]; then
-      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
-    elif [ -e "${FM_FAKE_HERDR_CLOSED:?}" ]; then
-      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":true}]}}'
-    else
-      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
-    fi
-    ;;
-  "tab list")
-    case "$*" in
-      *"--workspace w2"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' ;;
-      *"--workspace w3"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' ;;
-      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
-    esac
-    ;;
+	  "workspace list")
+	    if [ -e "${FM_FAKE_HERDR_RESTORED:?}" ]; then
+	      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
+	    elif [ -e "${FM_FAKE_HERDR_CLOSED:?}" ]; then
+	      if [ "${FM_FAKE_HERDR_WORKSPACE_STILL_PRESENT:-0}" = 1 ]; then
+	        printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":true}]}}'
+	      else
+	        printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":false},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":true}]}}'
+	      fi
+	    else
+	      printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t2","label":"firstmate/task-x1 · p:AbCdEfGhIjKlMnOpQrStUv","focused":false},{"workspace_id":"w2","active_tab_id":"w2:t2","label":"2ndmate-bravo","focused":true},{"workspace_id":"w3","active_tab_id":"w3:t1","label":"2ndmate-alpha","focused":false}]}}'
+	    fi
+	    ;;
+	  "tab list")
+	    case "$*" in
+	      *"--workspace w1"*)
+	        if [ "${FM_FAKE_HERDR_EMPTYING_TARGET:-0}" = 1 ]; then
+	          printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t2","workspace_id":"w1","focused":false}]}}'
+	        else
+	          printf '%s\n' '{"result":{"tabs":[]}}'
+	        fi ;;
+	      *"--workspace w2"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","focused":true}]}}' ;;
+	      *"--workspace w3"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"w3:t1","focused":true}]}}' ;;
+	      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+	    esac
+	    ;;
+	  "pane list")
+	    case "$*" in
+	      *"--workspace w1"*)
+	        if [ "${FM_FAKE_HERDR_EMPTYING_TARGET:-0}" = 1 ]; then
+	          printf '%s\n' '{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t2"}]}}'
+	        else
+	          printf '%s\n' '{"result":{"panes":[]}}'
+	        fi ;;
+	      *) printf '%s\n' '{"result":{"panes":[]}}' ;;
+	    esac
+	    ;;
+	  "pane process-info")
+	    if [ "${FM_FAKE_HERDR_EMPTYING_TARGET:-0}" = 1 ]; then
+	      printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"pid":67,"name":"zsh (qterm)","argv0":"zsh (qterm)"}]}}}'
+	    fi
+	    ;;
   "status --json")
     printf '%s\n' '{"server":{"running":true}}'
     ;;
@@ -1941,7 +1967,22 @@ case "${1:-} ${2:-}" in
     ;;
 esac
 SH
-  chmod +x "$case_dir/fakebin/herdr"
+  cat > "$case_dir/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "${FM_FAKE_HERDR_EMPTYING_TARGET:-0}" = 1 ]; then
+  case "$*" in
+    "-axo pid=,ppid=") printf '1 0\n67 1\n68 67\n'; exit 0 ;;
+    "-p 67 -o stat=") printf 'Ss+\n'; exit 0 ;;
+    "-p 67 -o comm=") printf 'zsh (qterm)\n'; exit 0 ;;
+    "-p 67 -o args=") printf 'zsh (qterm)\n'; exit 0 ;;
+    "-p 68 -o stat=") printf 'S\n'; exit 0 ;;
+    "-p 68 -o comm=") printf 'zsh\n'; exit 0 ;;
+    "-p 68 -o args=") printf 'zsh\n'; exit 0 ;;
+  esac
+fi
+exec "$REAL_PS_FOR_TEST" "$@"
+SH
+  chmod +x "$case_dir/fakebin/herdr" "$case_dir/fakebin/ps"
 }
 
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close() {
@@ -2034,6 +2075,38 @@ test_herdr_projection_teardown_retains_records_without_workspace_identity() {
   assert_grep "not fully removed" "$case_dir/stderr" \
     "missing workspace identity did not explain why records were retained"
   pass "herdr projection teardown retains records without close-helper workspace identity"
+}
+
+test_herdr_projection_teardown_retains_records_when_plain_emptying_workspace_remains() {
+  local case_dir log closed restored rc
+  case_dir=$(make_case herdr-projection-plain-emptying-workspace-present)
+  write_meta "$case_dir" local-only ship
+  configure_herdr_projection_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; restored="$case_dir/restored"; : > "$log"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
+    FM_FAKE_HERDR_EMPTYING_TARGET=1 FM_FAKE_HERDR_WORKSPACE_STILL_PRESENT=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-projection-plain-emptying-workspace-present: teardown reported success with the emptied workspace still present"
+  [ -e "$closed" ] \
+    || fail "herdr-projection-plain-emptying-workspace-present: fixture did not attempt the plain close"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "plain emptying close with present workspace incorrectly retired the presentation journal"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "plain emptying close with present workspace erased the durable endpoint metadata"
+  assert_grep "did not confirm removal of the emptied workspace" "$case_dir/stderr" \
+    "plain emptying close did not report the unresolved workspace"
+  assert_grep "not fully removed" "$case_dir/stderr" \
+    "plain emptying close did not retain records through the final teardown gate"
+  assert_contains "$(cat "$log")" "pane close w1:p2" \
+    "plain emptying regression did not exercise the explicit pane close"
+  assert_not_contains "$(cat "$log")" "workspace close" \
+    "plain emptying regression escalated to workspace cleanup"
+  pass "herdr projection teardown retains records when a plain emptying close leaves the workspace present"
 }
 
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup() {
@@ -2666,6 +2739,7 @@ test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_herdr_projection_teardown_retains_records_when_close_helper_fails_after_pane_disappears
 test_herdr_projection_teardown_retains_records_without_workspace_identity
+test_herdr_projection_teardown_retains_records_when_plain_emptying_workspace_remains
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head

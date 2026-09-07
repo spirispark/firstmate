@@ -1709,7 +1709,9 @@ test_projection_close_ambiguous_positions_fall_back_to_plain_close() {
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/6.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/8.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/9.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
+  cp "$resp/9.out" "$resp/10.out"
+  cp "$resp/9.out" "$resp/11.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/12.out"
   sleep 300 & bgpid=$!
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
@@ -1781,7 +1783,9 @@ test_projection_close_busy_pane_falls_back_to_plain_close() {
   printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w2:p2","shell_pid":%s,"foreground_process_group_id":%s,"foreground_processes":[{"pid":%s,"name":"zsh","argv0":"zsh"},{"pid":99999,"name":"pi","argv0":"pi"}]}}}\n' "$bgpid" "$bgpid" "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  cp "$resp/10.out" "$resp/11.out"
+  cp "$resp/10.out" "$resp/12.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
   make_death_lab "$dir" "$bgpid"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -1888,7 +1892,9 @@ test_projection_close_generic_shell_child_stays_plain_close() {
   qterm_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
   printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
   printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true}]}}' > "$resp/10.out"
-  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/11.out"
+  cp "$resp/10.out" "$resp/11.out"
+  cp "$resp/10.out" "$resp/12.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/13.out"
   make_death_lab "$dir" "$bgpid" "$worker_pid" zsh zsh S \
     "zsh (qterm)" "zsh (qterm)"
   fb=$(make_herdr_fakebin "$dir")
@@ -1903,6 +1909,52 @@ test_projection_close_generic_shell_child_stays_plain_close() {
   kill -0 "$bgpid" 2>/dev/null || fail "a generic qterm shell child close signaled the pane shell"
   kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
   pass "herdr presentation cleanup: a generic qterm shell child stays on the plain-close fallback"
+}
+
+test_projection_close_plain_emptying_requires_workspace_removal() {
+  local dir log resp fb out status bgpid worker_pid
+  dir="$TMP_ROOT/close-plain-emptying-workspace-present"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  worker_pid=98993
+  printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"w1","active_tab_id":"w1:t1","focused":true},{"workspace_id":"w2","active_tab_id":"w2:t2","focused":false}]}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w1:t1","focused":true}]}}' > "$resp/2.out"
+  printf '%s\n' '{"result":{"pane":{"pane_id":"w2:p2","tab_id":"w2:t2","workspace_id":"w2"}}}' > "$resp/3.out"
+  printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","workspace_id":"w2"}]}}' > "$resp/4.out"
+  printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/5.out"
+  cp "$resp/1.out" "$resp/6.out"
+  sleep 300 & bgpid=$!
+  qterm_process_info_fixture w2:p2 "$bgpid" > "$resp/7.out"
+  printf '%s\n' '{"error":{"code":"pane_not_found"}}' > "$resp/9.out"
+  cp "$resp/1.out" "$resp/10.out"
+  cp "$resp/1.out" "$resp/11.out"
+  cp "$resp/2.out" "$resp/12.out"
+  make_death_lab "$dir" "$bgpid" "$worker_pid" zsh zsh S \
+    "zsh (qterm)" "zsh (qterm)"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_HERDR_PS_BIN="$dir/ps" FM_BACKEND_HERDR_WORKSPACE_MOVER="$dir/mover" \
+    FM_FAKE_MOVER_LOG="$dir/mover.log" FM_FAKE_MOVER_RESPONSE="$dir/no-response" \
+    FM_BACKEND_HERDR_DEATH_CLOSE_POLLS=2 FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      set +e
+      fm_backend_herdr_projection_close_pane_focus_preserving fmtest w2:p2
+      rc=$?
+      set -e
+      printf "confirmed=%s\n" "${FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED:-unset}"
+      exit "$rc"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a plain emptying close must fail while its workspace remains present: $out"
+  assert_contains "$out" "did not confirm removal of the emptied workspace" \
+    "plain emptying close did not report the unresolved workspace"
+  assert_contains "$out" "confirmed=0" \
+    "plain emptying close set the removal confirmation flag without workspace absence"
+  assert_contains "$(cat "$log")" $'pane\x1fclose\x1fw2:p2' "plain emptying regression did not reach the explicit close"
+  kill -0 "$bgpid" 2>/dev/null || fail "plain emptying fallback signaled the pane shell"
+  kill "$bgpid" 2>/dev/null || true; wait "$bgpid" 2>/dev/null || true
+  pass "herdr presentation cleanup: plain fallback of an emptying close waits for workspace removal"
 }
 
 test_projection_close_death_escalates_sigkill_after_sighup_survival() {
@@ -4495,6 +4547,7 @@ test_projection_close_busy_pane_falls_back_to_plain_close
 test_projection_close_transient_prompt_helper_settles_then_uses_pane_death
 test_projection_close_stable_qterm_helper_child_uses_pane_death
 test_projection_close_generic_shell_child_stays_plain_close
+test_projection_close_plain_emptying_requires_workspace_removal
 test_projection_close_death_escalates_sigkill_after_sighup_survival
 test_projection_close_death_failure_falls_back_to_plain_close
 test_projection_close_death_still_restores_a_stolen_focus

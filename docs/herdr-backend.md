@@ -123,7 +123,7 @@ If that rollback cannot restore the verified original order, cleanup warns loudl
 The pane-death signals are pid-exact: the escalation re-reads the pane's process information and refuses unless the same shell pid still passes the strict idle ownership proof, so an exited and reused pid is never signaled.
 Any ambiguity, unsupported or failed move, or unproved shell falls back to the plain explicit close, and the exact prior-tab restore remains the backstop behind every close.
 Pane disappearance can precede removal of its now-empty workspace, and the first absent-workspace response can precede publication of that removal's focus update.
-Every pane-death cleanup therefore waits under the session lock for two consecutive exact-workspace-absence responses, then verifies exact focus twice before it completes the transaction.
+Every proved workspace-emptying cleanup therefore waits under the session lock for two consecutive exact-workspace-absence responses before it can complete the transaction, including a plain explicit-close fallback selected after the idle-shell proof refuses a non-helper child.
 Degraded behavior is therefore never worse than the pre-mitigation sub-second restore.
 Ordinary non-projected task removal serializes through the same session lock, applies the same focus-safe plan when its close would empty a non-focused workspace, keeps the legitimate plain close when the target is the active tab, and refuses an unlocked close if the lock cannot be acquired.
 Task cleanup acquires that session lock before the task's isolated copy is returned, so a contended lock refuses up front while the copy, every durable record, and the endpoint are all intact for a plain rerun.
@@ -157,7 +157,7 @@ The proof retries strict single samples for a bounded settle window because an i
 Any foreground command, non-helper child process, helper descendant, active shell job, unknown shell, unreadable process table, missing field, or API error preserves the pane.
 Firstmate immediately revalidates the same journal, metadata absence, workspace title and token uniqueness, one-tab and one-pane topology, exact pane relationship, absent agent, process proof, and non-target focus before calling the existing exact-pane focus-preserving close helper.
 It closes only that pane, never a workspace.
-The matching journal is retired only after the close helper has positively confirmed exact pane removal and any emptied workspace removal; an unconfirmed close or workspace-removal timeout retains the journal, while a confirmed removal may retire it even when focus restoration reported an error after the close.
+The matching journal is retired only after the close helper has positively confirmed exact pane removal and any proved emptied workspace removal; an unconfirmed close, a workspace-removal timeout, or a plain fallback whose emptied workspace remains present or unknown retains the journal, while a confirmed removal may retire it even when focus restoration reported an error after the close.
 A second run finds no matching title or journal and is a no-op.
 A malformed or missing title or token, duplicate token, zero or multiple journal matches, cross-home version 2 binding, current metadata, registered or unknown agent, extra tab or pane, active target, busy lock, changed revalidation, unreadable check, or any error preserves the candidate and lets session startup continue with at most a concise warning.
 

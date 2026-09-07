@@ -840,7 +840,7 @@ fm_backend_herdr_projection_focus_restore() {  # <session> <snapshot> <operation
 # exactly as before this hardening.
 fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-id> [required-agent-state]
   local session=$1 pane_id=$2 required_agent_state=${3:-}
-  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record
+  local before active_tab info target_pane target_tab target_ws close_status state plan plan_shell_pid plan_move_record plan_emptying_workspace
   FM_BACKEND_HERDR_PROJECTION_CLOSE_AGENT_STATE=""
   FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   [ -n "$pane_id" ] || return 0
@@ -872,14 +872,13 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   plan=plain
   plan_shell_pid=
   plan_move_record=
+  plan_emptying_workspace=0
   if [ -n "$target_ws" ]; then
     plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane_id" "$target_ws" "$target_tab" "${before%%$'\t'*}")
-    case "$plan" in
-      moved$'\t'*)
-        plan_move_record=${plan%%$'\n'*}
-        plan=${plan##*$'\n'}
-        ;;
-    esac
+    fm_backend_herdr_parse_emptying_close_plan "$plan"
+    plan=$FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN
+    plan_move_record=$FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD
+    plan_emptying_workspace=$FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING
     case "$plan" in
       death\ *)
         plan_shell_pid=${plan#death }
@@ -903,8 +902,7 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
   else
     close_status=1
   fi
-  if [ "$close_status" -eq 0 ] \
-     && { [ "$plan" = death ] || [ -n "$plan_move_record" ]; }; then
+  if [ "$close_status" -eq 0 ] && [ "$plan_emptying_workspace" = 1 ]; then
     if ! fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
       echo "warning: herdr presentation cleanup did not confirm removal of the emptied workspace" >&2
       close_status=1
@@ -995,6 +993,8 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 # "moved<TAB><ws><TAB><original-index><TAB><socket><TAB><focused><TAB><pre-move-order-json>"
 # record line is echoed first so the caller can hand it to
 # fm_backend_herdr_emptying_move_rollback when removal is not confirmed.
+# Once the exact one-tab and one-pane workspace-emptying topology is proved, an
+# "emptying<TAB><ws>" record line is emitted before the final plan.
 # Never fails; every ambiguity plans "plain".
 # The death plan requires the close to empty the workspace (exactly one tab
 # and one pane, both the target), the target workspace to sit behind the
@@ -1015,6 +1015,7 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
     (.result.panes | type) == "array" and (.result.panes | length) == 1
     and .result.panes[0].pane_id == $pane
   ' >/dev/null 2>&1 || { printf 'plain\n'; return 0; }
+  printf 'emptying\t%s\n' "$ws_id"
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || { printf 'plain\n'; return 0; }
   indices=$(printf '%s' "$list" | jq -r --arg ws "$ws_id" --arg focused "$focused_ws" '
     (.result.workspaces // null) as $s
@@ -1088,6 +1089,27 @@ fm_backend_herdr_emptying_close_plan() {  # <session> <pane-id> <workspace-id> <
   else
     printf 'plain\n'
   fi
+}
+
+fm_backend_herdr_parse_emptying_close_plan() {  # <plan-output>
+  local raw=${1:-} line
+  FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=plain
+  FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=
+  FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=0
+  while [ "$raw" != "${raw#*$'\n'}" ]; do
+    line=${raw%%$'\n'*}
+    raw=${raw#*$'\n'}
+    case "$line" in
+      emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1 ;;
+      moved$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=$line ;;
+      plain|death\ *) FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=$line ;;
+    esac
+  done
+  case "$raw" in
+    emptying$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING=1 ;;
+    moved$'\t'*) FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD=$raw ;;
+    plain|death\ *) FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN=$raw ;;
+  esac
 }
 
 # fm_backend_herdr_emptying_move_rollback: restore the exact pre-move
@@ -1911,11 +1933,11 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
   esac
 }
 
-# fm_backend_herdr_workspace_wait_dead: after a pane-death close has proved the
-# exact pane gone, wait for Herdr to publish removal of its now-empty exact
-# workspace. Pane disappearance and the first absent-workspace response can
-# precede that workspace's focus transition on 0.7.5, so require two
-# consecutive exact-absence samples before restoring focus.
+# fm_backend_herdr_workspace_wait_dead: after a proved workspace-emptying close
+# has proved the exact pane gone, wait for Herdr to publish removal of its
+# now-empty exact workspace. Pane disappearance and the first absent-workspace
+# response can precede that workspace's focus transition on 0.7.5, so require
+# two consecutive exact-absence samples before restoring focus.
 fm_backend_herdr_workspace_wait_dead() {  # <session> <workspace_id>
   local session=$1 workspace_id=$2 attempt=0 presence dead_seen=0
   local max_attempts=${FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS:-40}
@@ -2858,7 +2880,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
 # back to the plain close, matching the pre-hardening contract.
 fm_backend_herdr_kill_serialized() {  # <session> <pane>
   local session=$1 pane=$2
-  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record close_failed
+  local before active_tab info target_pane target_tab target_ws plan shell_pid plan_move_record plan_emptying_workspace close_failed
   before=$(fm_backend_herdr_projection_focus_snapshot "$session") || before=
   if [ -n "$before" ]; then
     active_tab=${before#*$'\t'}
@@ -2869,12 +2891,11 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
     if [ "$target_pane" = "$pane" ] && [ -n "$target_tab" ] && [ "$target_tab" != "$active_tab" ]; then
       plan=$(fm_backend_herdr_emptying_close_plan "$session" "$pane" "$target_ws" "$target_tab" "${before%%$'\t'*}")
       plan_move_record=
-      case "$plan" in
-        moved$'\t'*)
-          plan_move_record=${plan%%$'\n'*}
-          plan=${plan##*$'\n'}
-          ;;
-      esac
+      plan_emptying_workspace=0
+      fm_backend_herdr_parse_emptying_close_plan "$plan"
+      plan=$FM_BACKEND_HERDR_EMPTYING_CLOSE_PLAN
+      plan_move_record=$FM_BACKEND_HERDR_EMPTYING_CLOSE_MOVE_RECORD
+      plan_emptying_workspace=$FM_BACKEND_HERDR_EMPTYING_CLOSE_EMPTYING
       close_failed=0
       case "$plan" in
         death\ *)
@@ -2888,8 +2909,7 @@ fm_backend_herdr_kill_serialized() {  # <session> <pane>
           fm_backend_herdr_explicit_close_pane_confirmed "$session" "$pane" || close_failed=1
           ;;
       esac
-      if [ "$close_failed" = 0 ] \
-         && { [ "$plan" != plain ] || [ -n "$plan_move_record" ]; }; then
+      if [ "$close_failed" = 0 ] && [ "$plan_emptying_workspace" = 1 ]; then
         if ! fm_backend_herdr_workspace_wait_dead "$session" "$target_ws"; then
           echo "warning: herdr task kill did not confirm removal of the emptied workspace" >&2
           close_failed=1
