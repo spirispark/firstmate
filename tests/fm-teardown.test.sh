@@ -1587,6 +1587,42 @@ test_herdr_flat_teardown_preflight_refuses_before_changes() {
   pass "herdr flat teardown preflight refuses before every destructive change"
 }
 
+test_herdr_flat_teardown_preflight_refuses_before_side_effecting_cleanup() {
+  local case_dir log closed rc thlog teardown_bin
+  case_dir=$(make_case herdr-flat-preflight-before-side-effects)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+  : > "$case_dir/state/task-x1.status"
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  mkdir -p "$case_dir/test-root"
+  cp -R "$ROOT/bin" "$case_dir/test-root/bin"
+  rm -f "$case_dir/test-root/bin/backends/herdr.sh"
+  teardown_bin="$case_dir/test-root/bin/fm-teardown.sh"
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+    FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    PATH="$case_dir/fakebin:$PATH" \
+    "$teardown_bin" task-x1 --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-flat-preflight-before-side-effects: teardown continued past a missing-adapter preflight"
+  [ ! -e "$closed" ] \
+    || fail "herdr-flat-preflight-before-side-effects: a side-effecting close ran before the missing-adapter preflight refused"
+  [ -d "$case_dir/wt" ] \
+    || fail "herdr-flat-preflight-before-side-effects: preflight refusal removed the isolated worktree"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-flat-preflight-before-side-effects: preflight refusal erased task metadata"
+  assert_grep "nothing was changed" "$case_dir/stderr" \
+    "herdr-flat-preflight-before-side-effects: preflight refusal did not report nothing-was-changed"
+  pass "herdr flat teardown preflight runs before any side-effecting cleanup step"
+}
+
 configure_secondmate_with_herdr_child() {  # <case-dir>
   local case_dir=$1 home="$1/secondmate-home"
   mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
@@ -1653,7 +1689,11 @@ case "\${1:-} \${2:-}" in
         exit 1
       fi
     else
-      printf '%s\n' '{"result":{"pane":{"pane_id":"wC:p1","tab_id":"wC:t1","workspace_id":"wC"}}}'
+      if [ "\${FM_FAKE_HERDR_CHILD_PANE_GETS_MOVED_WORKSPACE:-0}" = 1 ]; then
+        printf '%s\n' '{"result":{"pane":{"pane_id":"wC:p1","tab_id":"wC:t1","workspace_id":"wMoved"}}}'
+      else
+        printf '%s\n' '{"result":{"pane":{"pane_id":"wC:p1","tab_id":"wC:t1","workspace_id":"wC"}}}'
+      fi
     fi
     ;;
   "pane close") : > "\${FM_FAKE_HERDR_CLOSED:?}" ;;
@@ -1807,12 +1847,13 @@ test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed() {
 }
 
 test_forced_secondmate_herdr_child_retains_records_when_workspace_removal_unconfirmed() {
-  local mode case_dir home log closed rc
+  local mode case_dir home log closed rc child_workspace
   for mode in present unknown; do
     case_dir=$(make_case "herdr-child-workspace-$mode")
     write_meta "$case_dir" local-only secondmate
     configure_secondmate_with_herdr_child "$case_dir"
     home="$case_dir/secondmate-home"
+    child_workspace=wC
     printf '%s\n' \
       'version=1' \
       'task_id=child-herdr' \
@@ -1845,7 +1886,7 @@ test_forced_secondmate_herdr_child_retains_records_when_workspace_removal_unconf
       || fail "herdr-child-workspace-$mode: failed child cleanup erased parent metadata"
     [ -d "$home" ] \
       || fail "herdr-child-workspace-$mode: failed child cleanup removed the secondmate home"
-    assert_grep "presentation workspace for child child-herdr is not confirmed removed" "$case_dir/stderr" \
+    assert_grep "presentation workspace $child_workspace for child child-herdr is not confirmed removed" "$case_dir/stderr" \
       "herdr-child-workspace-$mode: refusal did not explain workspace-removal retention"
   done
   pass "forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed"
@@ -2177,6 +2218,83 @@ test_herdr_projection_teardown_retains_records_when_plain_emptying_workspace_rem
   assert_not_contains "$(cat "$log")" "workspace close" \
     "plain emptying regression escalated to workspace cleanup"
   pass "herdr projection teardown retains records when a plain emptying close leaves the workspace present"
+}
+
+test_herdr_flat_teardown_gates_records_on_recorded_workspace_removal_when_journal_exists() {
+  # Fix 2 regression: every journal-bearing Herdr teardown must confirm
+  # removal of the recorded presentation workspace before erasing task records,
+  # regardless of whether the endpoint matches the journal. The teardown in
+  # this case has $T pointing at a different session:workspace:pane than the
+  # recorded journal; the generic kill path runs, the helper's
+  # KILL_WORKSPACE_REMOVAL_CONFIRMED flag is moot, and the recorded workspace
+  # is still present - records must be retained.
+  local case_dir log closed rc
+  case_dir=$(make_case herdr-flat-journal-mismatched-workspace)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+  : > "$case_dir/state/task-x1.status"
+  fm_write_meta "$case_dir/state/task-x1.herdr-presentation" \
+    "version=1" \
+    "task_id=task-x1" \
+    "session=mismatched" \
+    "workspace_id=w1" \
+    "tab_id=w1:t2" \
+    "pane_id=w1:p2"
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_WORKSPACE_STILL_PRESENT=1 \
+    FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-flat-journal-mismatched-workspace: teardown erased records despite a journal-present recorded workspace"
+  [ -e "$closed" ] \
+    || fail "herdr-flat-journal-mismatched-workspace: fixture did not attempt the generic close"
+  [ -e "$case_dir/state/task-x1.herdr-presentation" ] \
+    || fail "herdr-flat-journal-mismatched-workspace: present recorded workspace incorrectly retired the presentation journal"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-flat-journal-mismatched-workspace: present recorded workspace erased the durable endpoint metadata"
+  assert_grep "not confirmed removed" "$case_dir/stderr" \
+    "herdr-flat-journal-mismatched-workspace: present recorded workspace did not explain why records were retained"
+  pass "herdr flat teardown retains records when a journal exists but the recorded workspace is still present"
+}
+
+test_forced_secondmate_herdr_child_trusts_only_matching_helper_workspace_removal() {
+  # Fix 3 regression: child cleanup must only trust the helper's
+  # REMOVAL_CONFIRMED flag when the helper confirmed removal of THIS child's
+  # recorded workspace_id. If the helper confirmed a different workspace
+  # gone (or none at all), the recorded child workspace must still be
+  # confirmed gone before records are erased.
+  local case_dir home log closed rc
+  case_dir=$(make_case herdr-child-helper-workspace-mismatch)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_herdr_child "$case_dir"
+  home="$case_dir/secondmate-home"
+  printf '%s\n' \
+    'version=1' \
+    'task_id=child-herdr' \
+    'projection_id=AbCdEfGhIjKlMnOpQrStUv' \
+    > "$home/state/child-herdr.herdr-presentation"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_CHILD_PANE_GETS_MOVED_WORKSPACE=1 \
+    FM_FAKE_HERDR_CHILD_WORKSPACE_STILL_PRESENT=1 \
+    FM_BACKEND_HERDR_WORKSPACE_REMOVAL_POLLS=1 FM_BACKEND_HERDR_WORKSPACE_REMOVAL_INTERVAL=0 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-child-helper-workspace-mismatch: teardown erased records when helper confirmed a different workspace"
+  [ -e "$closed" ] \
+    || fail "herdr-child-helper-workspace-mismatch: fixture did not attempt the child close"
+  [ -e "$home/state/child-herdr.meta" ] \
+    || fail "herdr-child-helper-workspace-mismatch: helper-confirmed-different-workspace erased child metadata"
+  [ -e "$home/state/child-herdr.herdr-presentation" ] \
+    || fail "herdr-child-helper-workspace-mismatch: helper-confirmed-different-workspace erased child journal"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-child-helper-workspace-mismatch: helper-confirmed-different-workspace erased parent metadata"
+  assert_grep "not confirmed removed" "$case_dir/stderr" \
+    "herdr-child-helper-workspace-mismatch: helper-confirmed-different-workspace did not explain why records were retained"
+  pass "forced secondmate teardown retains Herdr child records unless the helper confirmed the recorded child workspace gone"
 }
 
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup() {
@@ -2801,15 +2919,18 @@ test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
+test_herdr_flat_teardown_preflight_refuses_before_side_effecting_cleanup
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
 test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_secondmate_herdr_child_retains_records_when_workspace_removal_unconfirmed
+test_forced_secondmate_herdr_child_trusts_only_matching_helper_workspace_removal
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_herdr_projection_teardown_retains_records_when_close_helper_fails_after_pane_disappears
 test_herdr_projection_teardown_retains_records_without_workspace_identity
+test_herdr_flat_teardown_gates_records_on_recorded_workspace_removal_when_journal_exists
 test_herdr_projection_teardown_retains_records_when_plain_emptying_workspace_remains
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
 test_squash_merged_branch_deleted_allows
