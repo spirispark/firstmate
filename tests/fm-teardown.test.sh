@@ -2714,8 +2714,8 @@ SH
   fi
   assert_grep "no-lsof Herdr process-group reap" "$case_dir/stderr" \
     "lsof-absent-herdr-process-group-reap: teardown did not use the Herdr pane process-group fallback"
-  grep -q "pane process-info --pane wG:pQ" "$herdr_log" \
-    || fail "lsof-absent-herdr-process-group-reap: teardown never asked Herdr for pane process-info"
+  assert_grep "pane process-info --pane wG:pQ --session default" "$herdr_log" \
+    "lsof-absent-herdr-process-group-reap: teardown did not scope pane process-info to the recorded Herdr session"
   expect_code 0 "$rc" "lsof-absent-herdr-process-group-reap: teardown should succeed after reaping"
   pass "missing lsof falls back to reaping the Herdr pane process group via pane process-info"
 }

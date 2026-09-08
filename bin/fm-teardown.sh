@@ -1380,7 +1380,7 @@ reap_task_backend_process_group() {  # <label>
       # service response. The shell_pid is also the foreground pgid (the
       # Herdr proof contract for idle shells), so reaping it covers the
       # whole pane process group without enumerating children.
-      leader=$(HERDR_SESSION="$FM_BACKEND_HERDR_SESSION" herdr pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+      leader=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
         | jq -er '.result.process_info.shell_pid | select(type == "number" and . > 1) | floor' 2>/dev/null) || leader=
       case "$leader" in ''|*[!0-9]*)
         echo "warning: lsof unavailable; Herdr pane process-info did not return a usable shell pid for $ID; skipping no-lsof process-group reap" >&2

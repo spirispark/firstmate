@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Contract test for the tracked GitHub Actions workflow at
-# .github/workflows/CI.yml. Single owner for "the CI workflow must do X"
+# .github/workflows/ci.yml. Single owner for "the CI workflow must do X"
 # assertions. This file does NOT touch any other test's domain:
 #   - It does not exercise bin/fm-lint.sh; that is tests/fm-lint.test.sh.
 #   - It does not exercise bin/fm-herdr-*; those tests live elsewhere.
-#   - It reads .github/workflows/CI.yml directly to assert the workflow's
+#   - It parses .github/workflows/ci.yml into a workflow model to assert the
 #     contract is preserved against tracked edits.
 #
 # A contract guard exists because CI behavior drifts when the workflow is
@@ -23,53 +23,48 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-WORKFLOW="$ROOT/.github/workflows/CI.yml"
+WORKFLOW="$ROOT/.github/workflows/ci.yml"
 
-# fm_workflow_lint_step: print the "Run bin/fm-lint.sh" step line that lives
-# directly under the Lint job. Returns nonzero if the step is absent. Uses
-# awk rather than a YAML parser so the guard stays portable to macOS Bash
-# 3.2 (the no-mistakes pre-push lane runs there too).
-fm_workflow_lint_step() {
-  awk '
-    /^  lint:/ { in_lint = 1; next }
-    in_lint && /- run: bin\/fm-lint\.sh/ { print; found = 1; exit }
-    END { exit !found }
-  ' "$WORKFLOW"
-}
-
-# fm_workflow_lint_step_env: print the first "KEY: value" line directly under
-# the Lint job's "Run bin/fm-lint.sh" step (i.e. inside its `env:` block).
-# Leading whitespace is stripped so callers can compare exact strings.
-# The first rule resets both flags whenever we enter a new top-level job key
-# (any "  <word>:" at column 2 that is not the lint job), so an absent env
-# block yields no match instead of bleeding into the next job's env.
-fm_workflow_lint_step_env() {
-  awk '
-    /^  [a-z]/ && !/^  lint:/ { in_lint = 0; in_step = 0 }
-    /^  lint:/ { in_lint = 1; next }
-    in_lint && /- run: bin\/fm-lint\.sh/ { in_step = 1; next }
-    in_step && /^          [A-Z_]+: / { sub(/^[[:space:]]+/, ""); print; exit }
-  ' "$WORKFLOW"
+fm_workflow_lint_step_field() {  # <field>
+  ruby -ryaml - "$WORKFLOW" "$1" <<'RUBY'
+path, field = ARGV
+workflow = YAML.safe_load_file(path, aliases: true)
+jobs = workflow.fetch("jobs")
+lint = jobs.fetch("lint")
+steps = lint.fetch("steps")
+abort "lint job steps is not a sequence" unless steps.is_a?(Array)
+matches = steps.select { |step| step.is_a?(Hash) && step["run"] == "bin/fm-lint.sh" }
+abort "expected exactly one lint step, found #{matches.length}" unless matches.length == 1
+step = matches.fetch(0)
+case field
+when "run"
+  print step.fetch("run")
+when "env.FM_LINT_JOBS"
+  env = step.fetch("env")
+  abort "lint step env is not a mapping" unless env.is_a?(Hash)
+  value = env.fetch("FM_LINT_JOBS")
+  abort "lint step FM_LINT_JOBS is not a string" unless value.is_a?(String)
+  print value
+else
+  abort "unknown field #{field}"
+end
+RUBY
 }
 
 test_lint_job_runs_pinned_shellcheck_lint() {
   [ -f "$WORKFLOW" ] || fail "CI workflow not found at $WORKFLOW"
-  local step
-  step=$(fm_workflow_lint_step) || step=
-  [ "$step" = "      - run: bin/fm-lint.sh" ] \
-    || fail "Lint job 'Run bin/fm-lint.sh' step missing or changed: got '$step'"
+  local run
+  run=$(fm_workflow_lint_step_field run) || run=
+  [ "$run" = "bin/fm-lint.sh" ] \
+    || fail "Lint job 'Run bin/fm-lint.sh' step missing or changed: got '$run'"
   pass "CI workflow Lint job runs bin/fm-lint.sh directly under the lint: job key"
 }
 
 test_lint_job_forces_serial_shellcheck_jobs() {
   [ -f "$WORKFLOW" ] || fail "CI workflow not found at $WORKFLOW"
   local env_value
-  env_value=$(fm_workflow_lint_step_env) || env_value=
-  # The Lint job must serialize the two-shard default so the pinned
-  # ShellCheck 0.11.0 cannot OOM-kill mid-run on the self-hosted ARM64
-  # runner. Local developer invocation is unaffected: the script's
-  # default stays JOBS=2.
-  [ "$env_value" = "FM_LINT_JOBS: '1'" ] \
+  env_value=$(fm_workflow_lint_step_field env.FM_LINT_JOBS) || env_value=
+  [ "$env_value" = "1" ] \
     || fail "CI workflow Lint job must export FM_LINT_JOBS='1' to serialize ShellCheck; got '$env_value'"
   pass "CI workflow Lint job forces FM_LINT_JOBS=1 so pinned ShellCheck stays deterministically memory-bounded"
 }
