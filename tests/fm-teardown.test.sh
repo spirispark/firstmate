@@ -554,8 +554,13 @@ run_teardown() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
-    mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
+  # Includes both shasum (macOS) and sha256sum (Linux coreutils, used on the
+  # self-hosted CI runner) because fm_backend_herdr_presentation_session_lock_path
+  # derives its lock path by hashing the session+socket with whichever is
+  # available. Also includes jq, which Herdr presence/structured-presence
+  # detection requires to parse fixture JSON.
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id jq ln \
+    mkdir mktemp mv perl ps readlink realpath rm sed sha256sum shasum sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
@@ -2611,6 +2616,110 @@ EOF
   pass "missing lsof falls back to reaping the tmux pane process group"
 }
 
+# When lsof is missing on a Herdr backend, the teardown must still reap a
+# leaked pane process group so a subsequent treehouse return can clear the
+# worktree's git index.lock. CI run 34167257643 hit this exact failure on
+# `multi-home teardown of acw`: lsof was absent on the runner, the Herdr
+# fallback printed only a warning, the leaked group kept the worktree's
+# .git/worktrees/<wt>/index.lock held, and treehouse return aborted.
+test_lsof_absent_reaps_herdr_pane_process_group() {
+  local case_dir rc pid herdr_log path_without_lsof shell_pid
+  case_dir=$(make_case lsof-absent-herdr-process-group-reap)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  # Anchor: the meta baked by configure_flat_herdr_teardown_case must carry
+  # exactly one backend=herdr so fm_backend_validate_task_endpoint routes this
+  # task through the Herdr branch, otherwise the no-lsof reap fallback can
+  # never run. The grep guards the configure function against silent drift.
+  backend_count=$(grep -c '^backend=' "$case_dir/state/task-x1.meta")
+  [ "$backend_count" -eq 1 ] || fail "lsof-absent-herdr-process-group-reap: meta has $backend_count backend= lines; configure_flat_herdr_teardown_case must append exactly one"
+  grep -q '^backend=herdr$' "$case_dir/state/task-x1.meta" \
+    || fail "lsof-absent-herdr-process-group-reap: meta backend is not herdr"
+  herdr_log="$case_dir/herdr.log"; : > "$herdr_log"
+  # Override the fakebin herdr. The teardown preflight calls pane get /
+  # workspace list / pane close BEFORE the reap fallback runs, so the fake
+  # must answer those subcommands too. Pane process-info returns the
+  # test-controlled sleeper pid as the foreground shell so the no-lsof
+  # reap fallback has a real process group to kill.
+  cat > "$case_dir/fakebin/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "\$*" >> "\${FM_FAKE_HERDR_LOG:?}"
+case "\${1:-} \${2:-}" in
+  "workspace list")
+    printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wH","active_tab_id":"wH:t1","focused":true},{"workspace_id":"wG","active_tab_id":"wG:tQ","focused":false}]}}'
+    ;;
+  "tab list")
+    case "\$*" in
+      *"--workspace wH"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wH:t1","focused":true}]}}' ;;
+      *"--workspace wG"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wG:tQ","workspace_id":"wG"}]}}' ;;
+      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+    esac
+    ;;
+  "pane list")
+    printf '%s\n' '{"result":{"panes":[{"pane_id":"wG:pQ","tab_id":"wG:tQ"}]}}'
+    ;;
+  "status --json")
+    printf '%s\n' '{"server":{"running":true}}'
+    ;;
+  "session list")
+    printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}'
+    ;;
+  "pane get")
+    if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ]; then
+      printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+      exit 1
+    fi
+    printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}}}'
+    ;;
+  "pane close")
+    : > "\${FM_FAKE_HERDR_CLOSED:?}"
+    ;;
+  "workspace wait-dead"|"workspace close"|"agent get"|"agent state")
+    printf '%s\n' '{"result":{"present":false}}'
+    ;;
+  "pane process-info")
+    cat <<JSON
+{"result":{"type":"pane_process_info","process_info":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG","shell_pid":\${FM_FAKE_HERDR_SHELL_PID:-99999},"foreground_process_group_id":\${FM_FAKE_HERDR_SHELL_PID:-99999},"foreground_processes":[{"pid":\${FM_FAKE_HERDR_SHELL_PID:-99999},"name":"bash"}]}}}
+JSON
+    ;;
+  *) printf '%s\n' "unexpected herdr subcommand in lsof-absent fixture: \$*" >&2; exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+  # Spawn a sleeper whose pgid is its own pid, mirroring Herdr's contract
+  # that shell_pid == foreground_process_group_id for an idle pane.
+  perl -e 'setpgrp(0, 0); chdir shift or die; exec "sleep", "300"' "$case_dir/wt" &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "lsof-absent-herdr-process-group-reap: setup sleeper did not start"
+  shell_pid=$pid
+
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
+    && fail "lsof-absent-herdr-process-group-reap: fixture path unexpectedly exposes lsof"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    FM_FAKE_HERDR_LOG="$herdr_log" FM_FAKE_HERDR_CLOSED="$case_dir/closed" \
+    FM_FAKE_HERDR_SHELL_PID="$shell_pid" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    cat "$case_dir/stderr" >&2
+    cat "$case_dir/stdout" >&2
+    fail "lsof-absent-herdr-process-group-reap: leaked Herdr pane process group survived teardown (rc=$rc)"
+  fi
+  assert_grep "no-lsof Herdr process-group reap" "$case_dir/stderr" \
+    "lsof-absent-herdr-process-group-reap: teardown did not use the Herdr pane process-group fallback"
+  grep -q "pane process-info --pane wG:pQ" "$herdr_log" \
+    || fail "lsof-absent-herdr-process-group-reap: teardown never asked Herdr for pane process-info"
+  expect_code 0 "$rc" "lsof-absent-herdr-process-group-reap: teardown should succeed after reaping"
+  pass "missing lsof falls back to reaping the Herdr pane process group via pane process-info"
+}
+
 test_lsof_error_refuses_before_removal() {
   local case_dir rc
   case_dir=$(make_case lsof-error-refusal)
@@ -2964,6 +3073,7 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
+test_lsof_absent_reaps_herdr_pane_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped

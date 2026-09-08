@@ -1372,10 +1372,45 @@ $dir_pids"
 
 reap_task_backend_process_group() {  # <label>
   local label=$1 leader leader_start pgid current_pgid own_pgid
-  if [ "$BACKEND" != tmux ]; then
-    echo "warning: lsof is unavailable; cannot resolve a process-group fallback for $BACKEND task $ID" >&2
-    return 0
-  fi
+  case "$BACKEND" in
+    tmux) : ;;
+    herdr)
+      # Herdr exposes pane process-info via the public herdr CLI; lsof is
+      # unavailable here, so this branch reads shell_pid directly from the
+      # service response. The shell_pid is also the foreground pgid (the
+      # Herdr proof contract for idle shells), so reaping it covers the
+      # whole pane process group without enumerating children.
+      leader=$(HERDR_SESSION="$FM_BACKEND_HERDR_SESSION" herdr pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+        | jq -er '.result.process_info.shell_pid | select(type == "number" and . > 1) | floor' 2>/dev/null) || leader=
+      case "$leader" in ''|*[!0-9]*)
+        echo "warning: lsof unavailable; Herdr pane process-info did not return a usable shell pid for $ID; skipping no-lsof process-group reap" >&2
+        return 0
+        ;;
+      esac
+      own_pgid=$(ps -o pgid= -p "$$" 2>/dev/null) || own_pgid=
+      own_pgid=$(printf '%s' "$own_pgid" | tr -d '[:space:]')
+      pgid=$leader
+      if [ "$pgid" = "$own_pgid" ]; then
+        echo "warning: lsof unavailable; Herdr pane shell pid $pgid is teardown's own process group; refusing to signal" >&2
+        return 0
+      fi
+      if ! kill -0 "$pgid" 2>/dev/null; then
+        return 0
+      fi
+      echo "teardown: no-lsof Herdr process-group reap for $ID (pgid=$pgid)" >&2
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+      sleep 1
+      if kill -0 -- "-$pgid" 2>/dev/null; then
+        echo "teardown: no-lsof Herdr process-group force-kill for $ID (pgid=$pgid)" >&2
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+      fi
+      return 0
+      ;;
+    *)
+      echo "warning: lsof is unavailable; cannot resolve a process-group fallback for $BACKEND task $ID" >&2
+      return 0
+      ;;
+  esac
   leader=$(tmux display-message -p -t "$T" '#{pane_pid}' 2>/dev/null) || leader=""
   case "$leader" in ''|*[!0-9]*)
     echo "warning: lsof is unavailable; cannot resolve the tmux pane process group for $ID" >&2

@@ -36,7 +36,19 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # Single owner of the lint definition (file set + config + version). Do not
       # re-spell the shellcheck command here; keep CI and the pre-push gate on it.
+      #
+      # FM_LINT_JOBS=1 forces the bounded workers to serialize on this
+      # self-hosted ARM64 runner: the two-shard default doubles peak
+      # ShellCheck RSS on the largest canonical files, and the pinned
+      # ShellCheck 0.11.0 was OOM-killed mid-run by the runner kernel
+      # (exit 137). Serialization preserves the same per-file full AST
+      # analysis, the same pinned version, and the same diagnostic surface
+      # as the default; it only changes inter-process scheduling. The
+      # default for local invocation stays at JOBS=2 so the pre-push gate
+      # and developer iteration are unaffected.
       - run: bin/fm-lint.sh
+        env:
+          FM_LINT_JOBS: '1'
 
   # Deterministic proof that portable parallel shards + portable serial + Herdr
   # equal the complete tests/*.test.sh inventory with no missing or duplicates,
