@@ -104,10 +104,10 @@ FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
 # every crewmate teardown into a workspace-emptying removal, and the focus-safe
 # removal plan can only avoid Herdr's focus-stealing explicit close while the
 # doomed pane holds a proved idle shell with no non-helper descendants; a
-# persistent child of that shell (gitstatusd, a zsh-async worker, direnv) makes
-# the plan fall back to the plain explicit close, which steals focus on every
-# release without the two upstream focus fixes (PR #1877 commit 165dca45 and
-# PR #1912 commit a979916).
+# persistent non-helper child of that shell (gitstatusd, a zsh-async worker,
+# direnv) makes the plan fall back to the plain explicit close, which steals
+# focus on every release without the two upstream focus fixes (PR #1877 commit
+# 165dca45 and PR #1912 commit a979916).
 # Herdr 0.8.0 is the first release carrying both, so a home that configured
 # nothing is projected only at or above it. An explicit "on" is still honored
 # below the floor.
