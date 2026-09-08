@@ -8,20 +8,20 @@
 # Usage:
 #   fm-install-herdr.sh <destination-directory>
 #
-# Pins Herdr v0.7.4 (protocol 16), the suite-verified protocol-16 release.
+# Pins Herdr v0.8.2 (protocol 20), the suite-verified protocol-20 release.
 # Selects the official GitHub Releases asset for the host OS/arch, downloads
 # with a bounded max size, verifies SHA-256 before install, then refuses to
 # finish unless the binary reports the exact pin version and a client protocol
-# at or above the required floor (16 for the real-Herdr family).
+# at or above the required floor (20 for the real-Herdr family).
 set -eu
 
 # Exact pin - change only with a re-verified real-Herdr matrix.
-FM_HERDR_CI_VERSION=0.7.4
+FM_HERDR_CI_VERSION=0.8.2
 FM_HERDR_CI_TAG="v${FM_HERDR_CI_VERSION}"
-FM_HERDR_CI_MIN_PROTOCOL=16
-# Bounded download ceiling (bytes). The largest official 0.7.4 asset is under 20 MiB.
+FM_HERDR_CI_MIN_PROTOCOL=20
+# Bounded download ceiling (bytes). The largest official 0.8.2 asset is under 20 MiB.
 FM_HERDR_CI_MAX_BYTES=25000000
-FM_HERDR_CI_REPO=ogulcancelik/herdr
+FM_HERDR_CI_REPO=herdrdev/herdr
 
 die() {
   printf 'fm-install-herdr.sh: %s\n' "$*" >&2
@@ -35,19 +35,19 @@ arch=$(uname -m)
 case "${os}-${arch}" in
   Linux-x86_64)
     ASSET=herdr-linux-x86_64
-    SHA256=bc0fc02d4ba500f9cac2353a43e67fe036785ecca6eb55378e050fac3c103059
+    SHA256=976150a14d490c94b243ea2e1a7eb2dfb67f12e36b182db90936f6728e6aecf4
     ;;
   Linux-aarch64|Linux-arm64)
     ASSET=herdr-linux-aarch64
-    SHA256=544e0002de42806d1ab64ccdef3a7e7414f24717b0b6b022bc9e57d2eefd26a2
+    SHA256=f55610658e1c2e0d2aaef730b4b2ab885f7f8ba00285ab372bfb14f2e3d5b40d
     ;;
   Darwin-arm64)
     ASSET=herdr-macos-aarch64
-    SHA256=24992e1625dbdcb18354a59e299e4b263c312400b31396cdc07cd46ed57f24a7
+    SHA256=a5d4f4d504d8b309c91f811050559300faba31258425f53c50852fc96f6ae574
     ;;
   Darwin-x86_64)
     ASSET=herdr-macos-x86_64
-    SHA256=ddf430133352e1712413d5d865b34a485546f4658893fc89986257d65a7585a8
+    SHA256=ab50262c8190cd7aa9056d249d255c08c328c3e8716de9cfa29db4f131b8e2c1
     ;;
   *)
     die "unsupported platform ${os}-${arch}; official Herdr assets are linux/macos x86_64 and aarch64"

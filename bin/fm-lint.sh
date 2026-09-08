@@ -22,9 +22,10 @@
 # given paths, matching the same config.
 #
 # Canonical lint defaults to two bounded workers over two stable logical shards.
-# Each shard writes separate diagnostics, and the parent replays those outputs in
-# deterministic shard and root order after every worker finishes. FM_LINT_JOBS=1
-# runs the same shards serially with byte-identical diagnostics and exit selection.
+# Each shard writes separate diagnostics from small sequential ShellCheck
+# batches, and the parent replays those outputs in deterministic shard and root
+# order after every worker finishes. FM_LINT_JOBS=1 runs the same shards
+# serially with byte-identical diagnostics and exit selection.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
@@ -55,7 +56,7 @@ fm_lint_worker_stop() {
 }
 
 fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
-  local manifest=$1 output_dir=$2 shard_index=$3 tab index path output rc=0
+  local manifest=$1 output_dir=$2 shard_index=$3 tab index path output rc=0 child_rc
   local -a roots
   roots=()
   tab=$(printf '\t')
@@ -64,17 +65,23 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     roots+=("$path")
   done < "$manifest"
   output="$output_dir/shard.$shard_index"
+  : > "$output.out"
   if [ "${#roots[@]}" -gt 0 ]; then
     trap 'fm_lint_worker_stop; exit 129' HUP
     trap 'fm_lint_worker_stop; exit 130' INT
     trap 'fm_lint_worker_stop; exit 143' TERM
-    "$FM_LINT_SHELLCHECK" --norc --external-sources -- "${roots[@]}" > "$output.out" 2>&1 &
-    FM_LINT_WORKER_SHELLCHECK_PID=$!
-    wait "$FM_LINT_WORKER_SHELLCHECK_PID" || rc=$?
-    FM_LINT_WORKER_SHELLCHECK_PID=
+    for path in "${roots[@]}"; do
+      "$FM_LINT_SHELLCHECK" --norc --external-sources -- "$path" >> "$output.out" 2>&1 &
+      FM_LINT_WORKER_SHELLCHECK_PID=$!
+      child_rc=0
+      wait "$FM_LINT_WORKER_SHELLCHECK_PID" || child_rc=$?
+      FM_LINT_WORKER_SHELLCHECK_PID=
+      if [ "$rc" -eq 0 ] && [ "$child_rc" -ne 0 ]; then
+        rc=$child_rc
+      fi
+      [ "$child_rc" -lt 128 ] || break
+    done
     trap - HUP INT TERM
-  else
-    : > "$output.out"
   fi
   printf '%s\n' "$rc" > "$output.rc"
   return "$rc"

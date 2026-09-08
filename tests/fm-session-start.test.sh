@@ -461,6 +461,20 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     ;;
+  "pane process-info")
+    pane=
+    prev=
+    for argument in "$@"; do
+      [ "$prev" != --pane ] || pane=$argument
+      prev=$argument
+    done
+    if [ "$pane" = p-new ] && [ -e "$spawned" ]; then
+      printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"p-new","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"pid":67,"name":"zsh","argv0":"zsh"}]}}}'
+    else
+      printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
+      exit 1
+    fi
+    ;;
   "agent get")
     if [ "${3:-}" = p-new ] && [ -e "$spawned" ]; then
       printf '%s\n' '{"result":{"agent":{"agent_status":"idle"}}}'

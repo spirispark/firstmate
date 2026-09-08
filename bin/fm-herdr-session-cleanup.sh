@@ -13,14 +13,17 @@
 # "└ <concise-task> · p:<22-char-token>" grammar, one token occurrence across
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
-# the pane contains only one idle recognized shell with no child process. A
-# version 2 journal must also bind the exact workspace, tab, and pane.
+# the pane contains one idle recognized shell with no non-helper child process;
+# the verified v0.8.2 `zsh (qterm)` plus `/bin/zsh --login` child topology
+# is the only child exception. A version 2 journal must also bind the exact
+# workspace, tab, and pane.
 # Topology is first checked from one locked API snapshot, then every mutation
 # prerequisite is immediately rechecked before the existing exact-pane
 # focus-preserving close helper is called.
 # The script never closes a workspace. It removes only the matching journal,
-# and only after the exact pane is confirmed gone. Every error warns and returns
-# success so session startup continues conservatively.
+# and only after the close helper confirms exact pane removal and presentation
+# workspace removal. Every error warns and returns success so session
+# startup continues conservatively.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -202,7 +205,7 @@ fm_herdr_cleanup_revalidate() { # <session> <workspace> <tab> <pane> <title> <to
 fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   local session=$1 workspace=$2 title=$3 home_real=$4 token journal id task_lock
   local version bound_workspace bound_tab bound_pane presentation_lock snapshot
-  local tab pane state close_status=0
+  local tab pane state close_status=0 removal_confirmed=0
   token=$(fm_herdr_cleanup_title_token "$title") || return 0
   if ! fm_herdr_cleanup_unique_match "$title" "$session" "$home_real"; then
     return 0
@@ -249,7 +252,7 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
   pane=$FM_HERDR_CLEANUP_PANE
   if [ "$(fm_backend_herdr_pane_agent_state "$session" "$pane")" != no-agent ] \
     || ! fm_backend_herdr_pane_idle_shell_pid "$session" "$pane" >/dev/null; then
-    fm_herdr_cleanup_warn "$id preserved because its pane is not a provably idle childless shell"
+    fm_herdr_cleanup_warn "$id preserved because its pane is not a provably idle helper-only shell"
     fm_lock_release "$presentation_lock" || true
     fm_lock_release "$task_lock" || true
     return 0
@@ -263,12 +266,12 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
     return 0
   fi
 
-  # This unconditional retirement is the authorized containment documented
-  # with the presentation floor ownership in bin/backends/herdr.sh.
+  FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED=0
   fm_backend_herdr_projection_close_pane_focus_preserving \
     "$session" "$pane" no-agent || close_status=$?
+  removal_confirmed=${FM_BACKEND_HERDR_PROJECTION_CLOSE_REMOVAL_CONFIRMED:-0}
   state=$(fm_backend_herdr_pane_agent_state "$session" "$pane")
-  if [ "$state" = dead ]; then
+  if [ "$removal_confirmed" = 1 ] && [ "$state" = dead ]; then
     if [ -f "$journal" ] && [ ! -L "$journal" ] \
       && fm_herdr_cleanup_unique_match "$title" "$session" "$home_real" \
       && [ "$FM_HERDR_CLEANUP_JOURNAL" = "$journal" ] \
@@ -284,6 +287,8 @@ fm_herdr_cleanup_one() { # <session> <workspace> <title> <home-real>
     fi
   elif [ "$close_status" -ne 0 ]; then
     fm_herdr_cleanup_warn "$id preserved because exact focus-safe pane closure was refused or unconfirmed"
+  elif [ "$state" = dead ]; then
+    fm_herdr_cleanup_warn "$id preserved because exact pane closure did not confirm workspace removal"
   else
     fm_herdr_cleanup_warn "$id preserved because exact pane closure could not be confirmed"
   fi

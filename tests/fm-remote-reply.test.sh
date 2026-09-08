@@ -86,6 +86,33 @@ sha256_file() {
   fi
 }
 
+test_remote_delta_read_uses_platform_od_when_path_is_poisoned() {
+  local tmp remote fakebin empty result rc
+  tmp=$(fm_test_tmproot fm-remote-delta-od-poison)
+  remote="$tmp/remote"
+  fakebin=$(fm_fakebin "$tmp")
+  mkdir -p "$remote/state"
+  cat > "$fakebin/od" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'not decimal bytes from PATH'
+SH
+  chmod +x "$fakebin/od"
+  printf 'done [corr=0123456789abcdef]: poisoned PATH still captured\n' \
+    > "$remote/state/parent-replies.status"
+  : > "$tmp/empty"
+  empty=$(sha256_file "$tmp/empty")
+  rc=0
+  result=$(PATH="$fakebin:$PATH" FM_HOME="$remote" "$ROOT/bin/fm-remote-delta-read.sh" \
+    state/parent-replies.status 0 "$empty" 0 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "PATH-poisoned od broke remote delta capture (rc=$rc)"$'\n'"$result"
+  assert_contains "$result" "status=delta" "delta reader did not emit a delta under a poisoned PATH"
+  assert_contains "$result" "done [corr=0123456789abcdef]: poisoned PATH still captured" \
+    "delta reader lost the complete appended line under a poisoned PATH"
+  pass "remote delta byte scanning uses the platform default od, not a custom od earlier on PATH"
+}
+
+test_remote_delta_read_uses_platform_od_when_path_is_poisoned
+
 ADAPTER="$ROOT/bin/fm-procevent-remote-reply.sh"
 SID=$(remote_env "$ADAPTER" source-id ios)
 out=$(remote_env "$ADAPTER" arm ios)

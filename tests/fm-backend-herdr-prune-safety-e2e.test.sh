@@ -41,7 +41,10 @@ herdr_forget_inherited_pane
 SESSION="fm-lab-prune-safety-e2e-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-herdr-prune-safety.XXXXXX")
+CLEANED=0
 cleanup_all() {
+  [ "$CLEANED" = 0 ] || return 0
+  CLEANED=1
   herdr_safe_stop_and_delete "$SESSION"
   rm -rf "$SCRATCH"
 }
@@ -106,8 +109,15 @@ MARKER="$SCRATCH/heartbeat.log"
 fm_backend_herdr_cli "$SESSION" pane run "$LIVE_PANE_ID" \
   "sh -c 'while true; do date +%s >> $MARKER; sleep 1; done'" >/dev/null 2>&1 \
   || fail "could not start the live heartbeat process in the startup workspace's pane"
-sleep 2
-[ -s "$MARKER" ] || fail "the live heartbeat process did not start writing its marker file"
+HEARTBEAT_READY=false
+for _ in $(seq 1 100); do
+  if [ -s "$MARKER" ]; then
+    HEARTBEAT_READY=true
+    break
+  fi
+  sleep 0.1
+done
+[ "$HEARTBEAT_READY" = true ] || fail "the live heartbeat process did not start writing its marker file"
 BEFORE_COUNT=$(wc -l < "$MARKER" | tr -d '[:space:]')
 pass "repro setup: a live long-running process is running in the startup workspace's single tab (label '1'), heartbeating to a marker file"
 

@@ -38,6 +38,8 @@ assert_contains_local() {  # <haystack> <needle> <msg>
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; exit 0; }
 command -v treehouse >/dev/null 2>&1 || { echo "skip: treehouse not found (required by fm-spawn.sh)"; exit 0; }
+HERDR_BIN=$(command -v herdr)
+HERDR_BIN_DIR=$(dirname "$HERDR_BIN")
 
 # shellcheck source=tests/herdr-test-safety.sh
 . "$ROOT/tests/herdr-test-safety.sh"
@@ -277,9 +279,46 @@ DUP_COUNT=$(lab workspace list 2>/dev/null | jq -r '[.result.workspaces[]? | sel
 [ "$DUP_COUNT" = 2 ] || fail "expected exactly two 'firstmate' workspaces, got $DUP_COUNT"
 WS_PRIMARY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_PRIMARY")
 
+# The launcher pane was just created by the second `make_workspace` above.
+# Herdr can return the pane id before the restored login shell is ready to
+# receive Enter; sending `pane run` into an unready pane leaves the command
+# in the input buffer and the spawned script never returns, so the marker
+# poll below times out after 4 minutes with "fm-spawn.sh never finished".
+# Block on the same public pane process-info predicate used by every other
+# real-herdr-gated suite in this family before the first fixed command
+# reaches the shell. The settle window (100 * 0.1s with 10 consecutive
+# stable samples) matches the readiness proofs in tests/fm-afk-inject-herdr-
+# e2e.test.sh and tests/fm-backend-herdr-smoke.test.sh.
+LAUNCHER_PANE_READY=false
+LAUNCHER_READY_SAMPLES=0
+for _ in $(seq 1 100); do
+  PROCESS_INFO=$(lab pane process-info --pane "$LAUNCH_DUP_PANE" 2>/dev/null || true)
+  if printf '%s' "$PROCESS_INFO" | jq -e '
+    .result.process_info as $process
+    | ($process.foreground_processes | length == 1)
+      and ($process.foreground_processes[0].pid == $process.shell_pid)
+  ' >/dev/null 2>&1; then
+    LAUNCHER_READY_SAMPLES=$((LAUNCHER_READY_SAMPLES + 1))
+    if [ "$LAUNCHER_READY_SAMPLES" -ge 10 ]; then
+      LAUNCHER_PANE_READY=true
+      break
+    fi
+  else
+    LAUNCHER_READY_SAMPLES=0
+  fi
+  sleep 0.1
+done
+[ "$LAUNCHER_PANE_READY" = true ] \
+  || fail "the launcher pane $LAUNCH_DUP_PANE did not become ready before the in-pane spawn attempt"
+
 cat > "$TMP_ROOT/spawn-in-pane.sh" <<SPAWN
 #!/usr/bin/env bash
 set -u
+PATH="$HERDR_BIN_DIR:\$PATH"
+export PATH
+"$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" pane get "\${HERDR_PANE_ID:-}" \
+  > "$TMP_ROOT/dupC.identity.json" 2> "$TMP_ROOT/dupC.identity.err"
+echo \$? > "$TMP_ROOT/dupC.identity.rc"
 FM_SPAWN_NO_GUARD=1 FM_HOME="$PRIMARY_HOME" FM_ROOT_OVERRIDE="$ROOT" \\
   "$ROOT/bin/fm-spawn.sh" dupC "$PROJ" "sh -c 'echo launcher-ws-ok'" --mode no-mistakes --yolo off --backend herdr \\
   > "$TMP_ROOT/dupC.out" 2> "$TMP_ROOT/dupC.err"
@@ -291,6 +330,14 @@ lab pane run "$LAUNCH_DUP_PANE" "$TMP_ROOT/spawn-in-pane.sh" >/dev/null 2>&1 \
 i=0
 while [ ! -f "$TMP_ROOT/dupC.rc" ] && [ "$i" -lt 120 ]; do sleep 2; i=$((i + 1)); done
 [ -f "$TMP_ROOT/dupC.rc" ] || fail "fm-spawn.sh never finished inside the launcher's herdr pane"
+[ "$(cat "$TMP_ROOT/dupC.identity.rc" 2>/dev/null)" = 0 ] \
+  || fail "the selected Herdr client could not read the launcher's exact pane from inside it"$'\n'\
+"$(cat "$TMP_ROOT/dupC.identity.err" 2>/dev/null)"
+IN_PANE_IDENTITY=$(cat "$TMP_ROOT/dupC.identity.json" 2>/dev/null)
+[ "$(printf '%s' "$IN_PANE_IDENTITY" | jq -r '.result.pane.pane_id // empty')" = "$LAUNCH_DUP_PANE" ] \
+  || fail "the in-pane read returned a pane other than its exact launcher identity"
+[ "$(printf '%s' "$IN_PANE_IDENTITY" | jq -r '.result.pane.workspace_id // empty')" = "$WS_PRIMARY_DUP" ] \
+  || fail "the in-pane read returned a workspace other than the launcher's exact parent"
 [ "$(cat "$TMP_ROOT/dupC.rc")" = 0 ] \
   || fail "the in-pane spawn failed"$'\n'"$(cat "$TMP_ROOT/dupC.err" 2>/dev/null)"
 

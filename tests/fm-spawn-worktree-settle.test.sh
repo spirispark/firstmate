@@ -100,6 +100,101 @@ run_settle_spawn() {
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
 
+make_herdr_ready_fakebin() {
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+log=${FM_FAKE_HERDR_LOG:?FM_FAKE_HERDR_LOG unset}
+{
+  printf '%s' "${HERDR_SESSION:-}"
+  for arg in "$@"; do
+    printf '\037%s' "$arg"
+  done
+  printf '\n'
+} >> "$log"
+
+case "${1:-}:${2:-}" in
+  status:--json)
+    printf '%s\n' '{"client":{"version":"0.8.2","protocol":20},"server":{"running":true,"version":"0.8.2","protocol":20}}'
+    exit 0
+    ;;
+  workspace:list)
+    printf '%s\n' '{"result":{"workspaces":[]}}'
+    exit 0
+    ;;
+  workspace:create)
+    printf '%s\n' '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t-seed"},"root_pane":{"pane_id":"w1:p1"}}}'
+    exit 0
+    ;;
+  tab:list)
+    printf '%s\n' '{"result":{"tabs":[{"tab_id":"t-seed","workspace_id":"w1","label":"1"}]}}'
+    exit 0
+    ;;
+  tab:create)
+    printf '%s\n' '{"result":{"tab":{"tab_id":"t-task","workspace_id":"w1"},"root_pane":{"pane_id":"w1:p2"}}}'
+    exit 0
+    ;;
+  pane:process-info)
+    if [ "${FM_FAKE_HERDR_READY_SHAPE:-malformed}" = valid ]; then
+      printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"pid":67,"name":"zsh","argv0":"zsh"}]}}}'
+    else
+      printf '%s\n' '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","foreground_processes":[{}]}}}'
+    fi
+    exit 0
+    ;;
+  pane:get)
+    printf '{"result":{"pane":{"pane_id":"w1:p2","foreground_cwd":"%s"}}}\n' "${FM_FAKE_HERDR_FOREGROUND_CWD:?FM_FAKE_HERDR_FOREGROUND_CWD unset}"
+    exit 0
+    ;;
+  pane:run|pane:send-text|pane:send-keys|agent:get)
+    exit 0
+    ;;
+esac
+
+printf 'unexpected herdr call: %s\n' "$*" >&2
+exit 1
+SH
+  chmod +x "$fakebin/herdr"
+  printf '%s\n' "$fakebin"
+}
+
+make_herdr_ready_case() {
+  local name=$1 id=$2 case_dir home proj wt fakebin log
+  case_dir="$TMP_ROOT/$name"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  log="$case_dir/herdr.log"
+  fakebin=$(make_herdr_ready_fakebin "$case_dir/fake")
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'off\n' > "$home/config/herdr-presentation-spaces"
+  printf 'Delivery contract: mode=no-mistakes\nbrief for %s\n' "$id" > "$home/data/$id/brief.md"
+  touch "$home/state/.last-watcher-beat" "$log"
+  fm_git_worktree "$proj" "$wt" "wt-$name"
+  printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$log"
+}
+
+read_herdr_ready_record() {
+  IFS='|' read -r _ HOME_DIR PROJ_DIR WT_DIR FAKEBIN_DIR HERDR_LOG <<EOF
+$1
+EOF
+}
+
+run_herdr_ready_spawn() {
+  local id=$1 shape=$2
+  FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SPAWN_NO_GUARD=1 HERDR_SESSION=fm-spawn-ready \
+    FM_SPAWN_HERDR_READY_SAMPLES=2 FM_SPAWN_HERDR_READY_STABLE=2 \
+    FM_SPAWN_HERDR_READY_INTERVAL=0 \
+    FM_FAKE_HERDR_LOG="$HERDR_LOG" FM_FAKE_HERDR_READY_SHAPE="$shape" \
+    FM_FAKE_HERDR_FOREGROUND_CWD="$WT_DIR" PATH="$FAKEBIN_DIR:$PATH" \
+    "$SPAWN" "$id" "$PROJ_DIR" "printf ready" --mode no-mistakes --yolo off --backend herdr 2>&1
+}
+
 # A single stale first read (the exact incident) must not be accepted: the
 # loop should keep polling until two consecutive reads agree, landing on the
 # real settled worktree instead.
@@ -141,7 +236,46 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+test_herdr_readiness_rejects_null_process_identity() {
+  local rec id out status
+  id=herdr-ready-null-z1
+  rec=$(make_herdr_ready_case herdr-ready-null "$id")
+  read_herdr_ready_record "$rec"
+
+  out=$(run_herdr_ready_spawn "$id" malformed)
+  status=$?
+  expect_code 1 "$status" "spawn should reject malformed Herdr process-info"
+  assert_contains "$out" "did not become ready before the spawn handoff" \
+    "readiness failure did not explain the Herdr handoff gate"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "malformed Herdr process-info still published task metadata"
+  assert_no_grep $'\x1f''pane'$'\x1f''run'$'\x1f''w1:p2'$'\x1f''treehouse get' "$HERDR_LOG" \
+    "malformed Herdr process-info reached the first pane handoff command"
+  pass "malformed Herdr process-info cannot satisfy spawn readiness"
+}
+
+test_herdr_readiness_accepts_exact_numeric_shell_owner() {
+  local rec id out status
+  id=herdr-ready-valid-z2
+  rec=$(make_herdr_ready_case herdr-ready-valid "$id")
+  read_herdr_ready_record "$rec"
+
+  out=$(run_herdr_ready_spawn "$id" valid)
+  status=$?
+  expect_code 0 "$status" "spawn should accept valid Herdr process-info"
+  assert_contains "$out" "spawned $id" "valid Herdr readiness did not launch"
+  assert_grep $'\x1f''pane'$'\x1f''run'$'\x1f''w1:p2'$'\x1f''treehouse get' "$HERDR_LOG" \
+    "valid Herdr readiness did not reach the first pane handoff command"
+  assert_grep "backend=herdr" "$HOME_DIR/state/$id.meta" \
+    "valid Herdr spawn did not record its backend"
+  assert_grep "herdr_pane_id=w1:p2" "$HOME_DIR/state/$id.meta" \
+    "valid Herdr spawn did not record the exact pane id"
+  pass "valid exact Herdr process-info satisfies spawn readiness"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_herdr_readiness_rejects_null_process_identity
+test_herdr_readiness_accepts_exact_numeric_shell_owner
 
 echo "# all fm-spawn-worktree-settle tests passed"

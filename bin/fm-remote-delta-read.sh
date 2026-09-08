@@ -135,7 +135,7 @@ while :; do
     [ -f "$LOG" ] && [ ! -L "$LOG" ] || die "log changed into an unsafe file: $REL"
     snapshot_log "$LOG" "$TMP/source" "$TMP/size" \
       || die "log could not be captured safely: $REL"
-    SIZE=$(tr -d ' ' < "$TMP/size")
+    SIZE=$(command -p tr -d ' ' < "$TMP/size")
     if [ "$SIZE" -lt "$OFFSET" ]; then
       copy_prefix "$TMP/source" "$SIZE" "$TMP/prefix"
       ACTUAL=$(sha256_file "$TMP/prefix")
@@ -150,12 +150,12 @@ while :; do
     fi
     if [ "$SIZE" -gt "$OFFSET" ]; then
       tail -c "+$((OFFSET + 1))" "$TMP/source" | head -c "$MAX_BYTES" > "$TMP/chunk" || true
-      COMPLETE_BYTES=$(LC_ALL=C od -An -v -tu1 "$TMP/chunk" | awk '
+      COMPLETE_BYTES=$(LC_ALL=C command -p od -An -v -tu1 "$TMP/chunk" | awk '
         { for (i = 1; i <= NF; i++) { bytes++; if ($i == 10) complete=bytes } }
         END { print complete + 0 }
       ')
       if [ "$COMPLETE_BYTES" -eq 0 ]; then : > "$TMP/payload"; else head -c "$COMPLETE_BYTES" "$TMP/chunk" > "$TMP/payload"; fi
-      BYTES=$(LC_ALL=C wc -c < "$TMP/payload" | tr -d ' ')
+      BYTES=$(LC_ALL=C wc -c < "$TMP/payload" | command -p tr -d ' ')
       if [ "$BYTES" -gt 0 ]; then
         TO=$((OFFSET + BYTES))
         copy_prefix "$TMP/source" "$TO" "$TMP/to-prefix"

@@ -51,6 +51,18 @@ s=$(fm_trace_context_hex 8)
 [ "$(fm_trace_context_hex 8)" != "$(fm_trace_context_hex 8)" ] || fail "hex must be fresh per call"
 pass "fm_trace_context_hex yields exact-length lowercase hex, distinct per call"
 
+OD_POISON_WORK=$(fm_test_tmproot fm-trace-context-od-poison)
+OD_POISON_BIN=$(fm_fakebin "$OD_POISON_WORK")
+cat > "$OD_POISON_BIN/od" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'not-hex-from-path'
+SH
+chmod +x "$OD_POISON_BIN/od"
+t=$(PATH="$OD_POISON_BIN:$PATH" fm_trace_context_hex 8)
+[ "${#t}" -eq 16 ] || fail "PATH-poisoned od must not break 8-byte hex, got ${#t}"
+case "$t" in *[!0-9a-f]*) fail "PATH-poisoned od produced non-hex output: $t" ;; esac
+pass "fm_trace_context_hex uses the platform default od/tr utilities, not a custom od earlier on PATH"
+
 # --- root mint ---------------------------------------------------------------
 
 ROOT_TP=$(fm_trace_context_mint)

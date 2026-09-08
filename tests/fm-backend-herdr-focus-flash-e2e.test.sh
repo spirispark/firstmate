@@ -7,11 +7,11 @@
 # (repositioning move plus pane-death removal) removes the doomed workspace
 # with no focus change and no corrective tab focus at all.
 # Part C covers the branch Part B structurally cannot reach - a doomed pane
-# whose shell holds a persistent child, so the lone-idle-shell proof fails and
-# the plan falls back to the plain explicit close - in the geometry where the
-# closing workspace's right neighbour is not the anchor. It then checks the
-# version floor that decides whether an unconfigured home is projected at all,
-# against what Part A measured about this very release.
+# whose shell holds a persistent non-helper child, so the idle-shell proof
+# fails and the plan falls back to the plain explicit close - in the geometry
+# where the closing workspace's right neighbour is not the anchor. It then
+# checks the version floor that decides whether an unconfigured home is
+# projected at all, against what Part A measured about this very release.
 # On a future release whose explicit close preserves focus, Part A records
 # that and Parts B and C keep outcome-only assertions, so no version is guessed.
 # Every CLI operation is routed through one guarded named non-default lab, and
@@ -208,9 +208,9 @@ fi
 # Part B always hands the adapter a freshly created workspace whose pane is a
 # bare idle shell, so its emptying-close plan always takes the focus-preserving
 # pane-death route. The reported defect lives on the other branch: a doomed pane
-# whose shell holds a PERSISTENT child (a gitstatusd, a zsh-async worker,
-# direnv, or anything a crewmate backgrounded) fails the lone-idle-shell proof
-# permanently, and the plan falls back to the plain explicit close.
+# whose shell holds a PERSISTENT non-helper child (a gitstatusd, a zsh-async
+# worker, direnv, or anything a crewmate backgrounded) fails the idle-shell
+# proof permanently, and the plan falls back to the plain explicit close.
 # The geometry puts the doomed workspace AFTER the anchor so the plan performs
 # no repositioning at all, and puts a spacer immediately to its right so the
 # closing workspace's right neighbour - where a defective release lands focus -
@@ -235,8 +235,9 @@ C_RIGHT_NEIGHBOUR=$(printf '%s' "$C_ORDER" | tr ',' '\n' | grep -A1 -Fx "$C_DOOM
 C_SURVIVOR_ORDER=$(printf '%s' "$C_ORDER" | tr ',' '\n' | grep -v "^$C_DOOMED_WS\$" | paste -sd, -) \
   || fail 'could not capture the Part C survivor order'
 
-# One persistent background child of the pane's shell, started outside any
-# worktree so nothing reaps it, is enough to fail the proof on every sample.
+# One persistent non-helper background child of the pane's shell, started
+# outside any worktree so nothing reaps it, is enough to fail the proof on
+# every sample.
 lab pane send-text "$C_DOOMED_PANE" 'cd / && sleep 3000 &' >/dev/null \
   || fail 'could not send the Part C persistent-child command'
 lab pane send-keys "$C_DOOMED_PANE" enter >/dev/null \

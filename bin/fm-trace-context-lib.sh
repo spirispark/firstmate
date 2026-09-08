@@ -72,8 +72,8 @@
 #
 # Security / trust boundary. This feature adds no OTEL_* variables, no
 # tracestate, no arbitrary environment injection, and no configurable or
-# arbitrary command execution. It DOES run the fixed local utilities `od` and
-# `tr` (resolved from PATH) to read a few bytes of entropy - a small local
+# arbitrary command execution. It DOES run the platform default `od` and `tr`
+# utilities through `command -p` to read a few bytes of entropy - a small local
 # pipeline with no configured provider, network, or watchdog, and no hard latency
 # guarantee; any resolver failure that returns omits the carrier without aborting
 # the spawn. Carrier-delivery failure also omits telemetry and continues when the
@@ -112,7 +112,7 @@ fm_trace_context_valid() {  # <traceparent>
 # checks turn a masked pipeline failure into a clean omission upstream.
 fm_trace_context_hex() {  # <byte-count>
   local bytes=$1 hex
-  hex=$(LC_ALL=C od -An -v -tx1 -N "$bytes" /dev/urandom 2>/dev/null | tr -d ' \n') || return 1
+  hex=$(LC_ALL=C command -p od -An -v -tx1 -N "$bytes" /dev/urandom 2>/dev/null | command -p tr -d ' \n') || return 1
   case "$hex" in
     '' | *[!0-9a-f]*) return 1 ;;
   esac

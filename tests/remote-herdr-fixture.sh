@@ -41,13 +41,14 @@ SH
 printf '%s\n' "$*" >> "$LOG"
 jq_state() { jq "$@" "$STATE"; }
 save() { tmp="$STATE.tmp.$$"; cat > "$tmp" && mv "$tmp" "$STATE"; }
-ws=""; label=""; cwd=""
+ws=""; label=""; cwd=""; pane_arg=""
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --workspace) ws=${args[$((i+1))]:-} ;;
     --label) label=${args[$((i+1))]:-} ;;
     --cwd) cwd=${args[$((i+1))]:-} ;;
+    --pane) pane_arg=${args[$((i+1))]:-} ;;
   esac
 done
 case "${1:-} ${2:-}" in
@@ -97,7 +98,16 @@ case "${1:-} ${2:-}" in
     [ ! -f "$SEND_FAIL" ] || exit 1
     jq_state --arg p "${3:-}" '.typed[$p] = true | .working[$p] = true' | save ;;
   "pane read") printf '\n' ;;
-  "pane process-info") printf '{"result":{"process":{"name":"codex"}}}\n' ;;
+  "pane process-info")
+    pane=$pane_arg
+    [ -n "$pane" ] || pane=${3:-}
+    [ "$pane" != --pane ] || pane=${4:-}
+    if [ "$(jq_state -r --arg p "$pane" '[.tabs[]|select(.pane_id==$p)]|length')" = 0 ]; then
+      printf '{"error":{"code":"pane_not_found","message":"%s"}}\n' "$pane" >&2
+      exit 1
+    fi
+    printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":67,"foreground_process_group_id":67,"foreground_processes":[{"pid":67,"name":"zsh","argv0":"zsh"}]}}}\n' "$pane"
+    ;;
   "agent get")
     pane=${3:-}
     if [ "$(jq_state -r --arg p "$pane" '.working[$p] // false')" = true ]; then

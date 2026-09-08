@@ -208,7 +208,8 @@ Cursor is deliberately outside this empty-composer matrix because its terminal c
 ## Herdr
 
 The compatibility floor is protocol 14.
-The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+The active required CI lane pins Herdr 0.8.2 protocol 20 through `bin/fm-install-herdr.sh` on the self-hosted Linux ARM64 runner.
+Retained broad real-Herdr matrix evidence covers Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -351,7 +352,7 @@ ok - real Herdr lab validation completed on Herdr 0.7.4 with the default-session
 
 The suite also covers lost or failed move responses, active-tab refusal, restart husks, missing and duplicate tokens, manual renames, concurrent cleanup, and exact focus restoration.
 
-The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 16:
+The mandatory projection suite ran again on 2026-07-24 against Herdr 0.7.5 protocol 17:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
@@ -397,6 +398,10 @@ HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
 
 Observed guarantee: one exact home-local, journal-correlated, one-tab and one-pane childless idle shell was closed after restoration while the exact non-target focus and default fleet session remained unchanged, and a repeat run was a no-op.
 
+That lane was refreshed on 2026-09-07 against Herdr 0.8.2 protocol 20 through the pinned side-by-side installer.
+Restored panes whose process-info foreground shell is exactly `zsh (qterm)` and whose only direct child has `args` `/bin/zsh --login`, no descendants, and `comm` exactly `/bin/zsh` on BSD `ps` or `zsh` on Linux procps are accepted by the shared idle-shell proof.
+Generic shell children and persistent non-helper children such as `gitstatusd`, `zsh-async`, and `direnv` still fail that proof; session-start cleanup preserves those panes, and task-close planning takes the plain-close fallback.
+
 ### Workspace-removal focus safety
 
 The focus-flash regression ran on 2026-08-05 against both Herdr 0.7.5 protocol 17 and Herdr 0.8.0 protocol 19 on macOS aarch64, with the 0.7.5 run using the pinned upstream release binary first on `PATH`:
@@ -431,14 +436,15 @@ ok - version floor: an unconfigured home stays projected on herdr 0.8.0 and the 
 evidence: herdr=0.8.0 protocol=19 steal_live=0 floor_verdict=0 default-session-tripwire=armed
 ```
 
-Part C is the case the suite could not reach before: a doomed pane whose shell holds a persistent background child fails the lone-idle-shell proof on every sample, so the plan takes the plain explicit close, in the geometry where the closing workspace's right neighbour is a spacer rather than the focused anchor.
+Part C is the case the suite could not reach before: a doomed pane whose shell holds a persistent non-helper child fails the idle-shell proof on every sample, so the plan takes the plain explicit close, in the geometry where the closing workspace's right neighbour is a spacer rather than the focused anchor.
 On 0.7.5 that fallback exposed a bounded four-sample wrong-focus window and restored the anchor exactly; on 0.8.0 the same fallback exposed none, which is why default-on projection is floored at 0.8.0 rather than mitigated further below it.
 The suite also cross-checks its own Part A measurement against the floor classifier on whatever release it runs, so a drifted protocol-to-release mapping fails there rather than silently gating on the wrong thing.
 
 ### Presentation version floor
 
 Default-on presentation projection is floored at Herdr 0.8.0.
-The floor's structural signal is the selected running server's protocol number, falling back to the client protocol only when that selected session positively reports no running server, and the release mapping was measured on 2026-08-05 by running each pinned upstream macOS aarch64 release asset's own `status --json` through the guarded lab helper:
+The floor's structural signal is the selected running server's protocol number, falling back to the client protocol only when that selected session positively reports no running server.
+The release mapping was measured on 2026-08-05 by running each pinned upstream macOS aarch64 release asset's own `status --json` through the guarded lab helper, then refreshed for the required CI pin on 2026-09-07 by `bin/fm-install-herdr.sh`'s exact-version and minimum-protocol gates:
 
 | Release | Reported version | Protocol | Carries both upstream focus fixes | Floor verdict |
 |---|---|---|---|---|
@@ -449,9 +455,11 @@ The floor's structural signal is the selected running server's protocol number, 
 | preview-2026-07-29-44b3adb12552 | 0.7.5-preview.2026-07-29-44b3adb12552 | 18 | yes | below |
 | preview-2026-08-04-d78e3d3b5126 | 0.8.0-preview.2026-08-04-d78e3d3b5126 | 19 | yes | above |
 | v0.8.0 | 0.8.0 | 19 | yes | above |
+| v0.8.2 | 0.8.2 | 20 | yes | above |
 
 No build lacking both fixes reaches protocol 19, and every pre-fix build tops out at 17, so protocol 19 is a safe structural expression of the 0.8.0 floor.
 The one post-fix build below it is a preview that still reports a 0.7.5 version, so it is conservatively treated as below the floor, which costs a preview build its projection and never lets an unfixed build through.
+Protocol 20 is above the same floor and is the required CI pin.
 The 2026-08-05 named-lab cross-version probe started a server from Herdr 0.7.5 and queried it with the installed 0.8.0 client; status reported client version 0.8.0 protocol 19, server version 0.7.5 protocol 17, server running true, and server compatible false.
 That ordinary post-upgrade shape proves the running server owns the focus behavior, so the unconfigured default composes client and selected-server verdicts conservatively and rechecks after server ensure before publishing a journal or creating a workspace.
 
@@ -469,13 +477,29 @@ tests/fm-backend-herdr.test.sh
 
 Observed guarantees: every measured release classifies as the table records; either the protocol or the version signal alone carries an at-or-above verdict, and each divergent pair flips once the carrying signal is removed; client and running selected-session server verdicts compose conservatively, an unreadable server-running state and losing both release signals report indeterminate and fall back flat, the default is rechecked after server ensure before projection publication, an unconfigured home is projected only at or above the floor, an explicit `on`, including the historical empty opt-in file, is honored below it, and the below-floor warning is emitted once per home per detected release rather than once per spawn.
 
-The whole real-Herdr lane was run on 2026-08-05 against both the CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
+The retained whole real-Herdr floor matrix was run on 2026-08-05 against historical CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
 
 ```sh
-HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
+HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --family real-herdr-gated
 ```
 
 Both runs reported `family=real-herdr-gated count=11 failed=0`.
+The required CI lane pin advanced to Herdr 0.8.2 protocol 20 on 2026-09-07.
+Focused side-by-side 0.8.2 lab verification with the default-session tripwire intact passed the impacted real-herdr-gated scripts:
+
+```sh
+bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
+PATH="$RUNNER_TEMP/bin:$PATH" HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  bin/fm-test-run.sh \
+  tests/fm-backend-autodetect-smoke.test.sh \
+  tests/fm-afk-inject-herdr-e2e.test.sh \
+  tests/fm-backend-herdr-presentation-e2e.test.sh \
+  tests/fm-backend-herdr-launcher-workspace-e2e.test.sh \
+  tests/fm-herdr-session-cleanup-e2e.test.sh \
+  tests/fm-backend-herdr-prune-safety-e2e.test.sh
+```
+
+Observed result: all six scripts exited 0 on Herdr 0.8.2 protocol 20, and the default fleet session's PID, start time, binary SHA-256, mtime, and inode were unchanged.
 The projection suite's unconfigured-home case is release-aware rather than pinned to one outcome, so it proves the projected default on 0.8.0 and the flat fallback with its naming warning on 0.7.4:
 
 ```text
@@ -491,7 +515,7 @@ Direct lab probes on 2026-07-28 established the removal rules the emptying-close
 - Ending a workspace's lone shell preserved the focused workspace exactly when the dying workspace sat behind it or the focused workspace was last, and moved focus to the focused workspace's right neighbor otherwise.
 - The production focus-preserving close in the dangerous geometry repositioned the doomed workspace, ended its proved shell, and left every concurrent focus sample on the exact anchor with no corrective `tab focus` issued.
 
-Two real-hardware conditions were required for the pane-death path to engage and are now encoded in the adapter and its unit fixtures: BSD `ps` reports a login shell's `comm` as `-zsh`, and an idle shell transiently hosts a prompt helper (starship) as a second foreground process immediately after a `workspace.move` relayout, which the bounded settle window absorbs.
+Three real-hardware conditions were required for the pane-death path to engage and are now encoded in the adapter and its unit fixtures: BSD `ps` reports a login shell's `comm` as `-zsh`, an idle shell transiently hosts a prompt helper (starship) as a second foreground process immediately after a `workspace.move` relayout, which the bounded settle window absorbs, and Herdr 0.8.2 restored panes report `zsh (qterm)` as the foreground shell while a single direct child remains `/bin/zsh --login` with platform-specific `comm` `/bin/zsh` or `zsh`.
 
 The rules match the v0.7.5 tag source (`close_selected_workspace` reassigns focus from the closing workspace's index; `handle_pane_died` only clamps the stale focused index), and the upstream default branch resolves both paths by workspace id (PR #1877, commit `165dca45`, for the explicit close; PR #1912, commit `a979916`, for pane death), so the plan degrades to a harmless reorder-then-remove once a release carries them.
 
@@ -516,6 +540,26 @@ Observed output:
 ok - forced secondmate teardown preflights every Herdr child before cleanup mutation
 ok - forced secondmate teardown retains Herdr child identity until exact pane disappearance
 ok - forced teardown retains a nested secondmate home and its grandchild's Herdr identity when the grandchild close is unconfirmed
+```
+
+The teardown fixture was refreshed on 2026-09-07 for Herdr preflight ordering and the universal recorded-workspace-removal invariant:
+
+```sh
+tests/fm-teardown.test.sh
+```
+
+The run completed 65 of 65 assertions green.
+
+Observed output:
+
+```text
+ok - herdr flat teardown preflight runs before any side-effecting cleanup step
+ok - herdr projection teardown retains records when close helper fails after pane disappearance
+ok - herdr projection teardown retains records without close-helper workspace identity
+ok - herdr projection teardown retains records when a plain emptying close leaves the workspace present
+ok - herdr flat teardown retains records when a journal exists but the recorded workspace is still present
+ok - forced secondmate teardown retains Herdr child identity until presentation workspace removal is confirmed
+ok - forced secondmate teardown retains Herdr child records unless the helper confirmed the recorded child workspace gone
 ```
 
 ### Composer and operational input
@@ -793,8 +837,7 @@ An unstyled capture has no ghost-strip proof and correctly stays `unknown`.
 With the composer on row 12 (zero-based), `#{cursor_y}` reported 17 both when idle and with real text typed, and `#{cursor_flag}` reported 0.
 The tmux composer verdict for a cursor pane is therefore `unknown` in every state, and tmux submission is acknowledged from the busy transition instead.
 On the cursorless backends, styled captures from Herdr and Zellij can prove the reverse-video placeholder empty, while cmux and Orca declare `styled=0` and therefore correctly return `unknown` for Cursor's bare placeholder row rather than risk a false `empty`.
-Herdr later grew its own pre-typing footer baseline and confirms delivery through it (see [Herdr backend](#herdr-backend) below).
-The shared cursorless submit core still claims no busy-transition fallback, so delivery on Zellij, cmux, and Orca can remain unconfirmed even though Cursor's recorded worker state remains backend-agnostic through the transcript fold.
+Herdr, Zellij, cmux, and Orca keep Cursor delivery unconfirmed when native idle ownership proof is unavailable; Cursor's recorded worker state remains backend-agnostic through the transcript fold.
 Claude and Codex were checked in the same run and are unaffected: their settled composers report `cursor_flag=1` and classify `empty`.
 
 ### Busy state
@@ -861,7 +904,7 @@ Before those were taught to the shared edge detector, a bare composer's wrap reg
 Measured as an A/B on the same live pane, the pre-fix classifier returned `pending` and the current one returned `empty`.
 
 The idle fix alone did not confirm delivery, because the composer branch reads the mid-turn row instead.
-With the rendered-footer transition in place, `bin/fm-send.sh` exited 0 and the steer executed in the pane; the same send previously exited 1 with `delivery unconfirmed; verdict=pending` on a message that had actually landed.
+A rendered-footer transition on Herdr is not submit ownership proof for Cursor while `agent get` reports `blocked` in every state, so this adapter reports the same `delivery unconfirmed; verdict=pending` failure mode rather than risk silently clearing an undelivered steer.
 
 The rest of the lifecycle was driven end to end on that worker:
 
@@ -874,9 +917,9 @@ The rest of the lifecycle was driven end to end on that worker:
 Other harnesses on Herdr are unaffected by the edge-detector change.
 All seven live panes of the running default session - one Pi, four Claude, two plain shells - classified identically under the pre-fix and current classifiers.
 
-**Delivery confirmation is verified on tmux and Herdr only.**
-Zellij, cmux, and Orca share a submit core that never consults the busy footer, so a Cursor steer there lands but `fm-send` reports delivery unconfirmed and exits non-zero.
-Teaching that shared core the same transition is deliberately separate work, because it changes the submit path for every harness on those three backends and needs its own live validation on each.
+**Delivery confirmation is verified on tmux only.**
+Herdr, Zellij, cmux, and Orca do not promote Cursor's rendered busy footer into submit confirmation without a native idle baseline, so a steer can land while `fm-send` reports delivery unconfirmed and exits non-zero.
+Teaching another adapter a safe ownership proof is deliberately separate work, because it changes its submit path and needs its own live validation.
 
 The portable regression is `tests/fm-cursor-harness.test.sh`, the composer captures are pinned in `tests/fm-composer-lib.test.sh`, and the Herdr submit and footer behavior is pinned in `tests/fm-backend-herdr.test.sh`.
 Refresh this harness-dependent proof before accepting a cursor upgrade:

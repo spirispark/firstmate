@@ -81,11 +81,13 @@
 #   authority, and every ambiguous recovery stays on the flat fallback after
 #   duplicate-agent risk is independently absent. Treehouse allocation and task
 #   metadata are unchanged.
-#   A clean projected create or exact resume makes one bounded attempt to hold
-#   the one session-scoped presentation-order lock (keyed by named session plus
-#   canonical socket, outside any home's state/) through launch handoff. Lock
-#   contention warns and falls back to the ordinary flat layout before any
-#   projection mutation. The exact response-derived new workspace is inserted
+#   A clean projected create holds the one session-scoped presentation-order
+#   lock (keyed by named session plus canonical socket, outside any home's
+#   state/) through launch handoff. An exact resume releases that lock after
+#   reclaim and journal convergence, before Treehouse acquisition; abort cleanup
+#   reacquires it before any Herdr mutation. Lock contention warns and falls back
+#   to the ordinary flat layout before any projection mutation. The exact
+#   response-derived new workspace is inserted
 #   immediately after its owning parent (firstmate or 2ndmate-<id>) contiguous
 #   child block. Ordering never authorizes lifecycle cleanup, and any
 #   unavailable, ambiguous, or failed move warns while the spawn continues.
@@ -657,6 +659,7 @@ HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
+HERDR_PROJECTION_RECOVERED=0
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 SPAWN_TASK_LOCK=
@@ -1940,6 +1943,7 @@ case "$BACKEND" in
           case "$HERDR_RECLAIM_STATUS" in
             0)
               HERDR_PROJECTED=1
+              HERDR_PROJECTION_RECOVERED=1
               HERDR_WORKSPACE_ID=$HERDR_RECOVERY_WORKSPACE_ID
               HERDR_SEEDED_DEFAULT_TAB_ID=""
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
@@ -2051,6 +2055,9 @@ EOF
       exit 1
     fi
     T="$HERDR_SES:$HERDR_PANE_ID"
+    if [ "$HERDR_PROJECTION_RECOVERED" -eq 1 ]; then
+      spawn_herdr_presentation_order_lock_release
+    fi
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
@@ -2150,6 +2157,50 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 
+# spawn_herdr_pane_wait_ready: confirm a freshly created Herdr pane's restored
+# login shell actually owns the foreground before the spawn handoff sends its
+# first fixed command. A herdr pane id can come back from tab create before
+# the pane's interactive shell is ready to receive Enter; sending a fixed
+# command into an unready pane leaves the text in the input buffer without
+# execution. Poll the public pane process-info predicate (single foreground
+# process, pid == shell_pid) used by the real-herdr e2e suites in this family,
+# and require enough stable samples so a transient shell re-exec or
+# restored-login bounce cannot race the readiness assertion.
+spawn_herdr_pane_wait_ready() {  # <session> <pane_id>
+  local herdr_ses=$1 herdr_pane_id=$2
+  local max_samples=${FM_SPAWN_HERDR_READY_SAMPLES:-100}
+  local stable_required=${FM_SPAWN_HERDR_READY_STABLE:-10}
+  local interval=${FM_SPAWN_HERDR_READY_INTERVAL:-0.1}
+  local stable=0 i=0 process_info
+  for i in $(seq 1 "$max_samples"); do
+    process_info=$(fm_backend_herdr_cli "$herdr_ses" pane process-info --pane "$herdr_pane_id" 2>/dev/null || true)
+    if printf '%s' "$process_info" | jq -e --arg pane "$herdr_pane_id" '
+      .result as $result
+      | $result.process_info as $process
+      | $process.foreground_processes as $foreground
+      | ($result.type == "pane_process_info")
+        and (($process | type) == "object")
+        and ($process.pane_id == $pane)
+        and (($process.shell_pid | type) == "number")
+        and ($process.shell_pid > 1)
+        and (($process.foreground_process_group_id | type) == "number")
+        and ($process.foreground_process_group_id == $process.shell_pid)
+        and (($foreground | type) == "array")
+        and (($foreground | length) == 1)
+        and (($foreground[0].pid | type) == "number")
+        and ($foreground[0].pid == $process.shell_pid)
+    ' >/dev/null 2>&1; then
+      stable=$((stable + 1))
+      [ "$stable" -ge "$stable_required" ] && return 0
+    else
+      stable=0
+    fi
+    sleep "$interval"
+  done
+  echo "error: herdr pane ${herdr_ses}:${herdr_pane_id} did not become ready before the spawn handoff (waited ${max_samples} samples)" >&2
+  return 1
+}
+
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
@@ -2207,6 +2258,10 @@ kimi_spawn_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
 }
+
+if [ "$RELAUNCH" -eq 0 ] && [ "$BACKEND" = herdr ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SES:-}" ]; then
+  spawn_herdr_pane_wait_ready "$HERDR_SES" "$HERDR_PANE_ID" || exit 1
+fi
 
 if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
